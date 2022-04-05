@@ -1,0 +1,362 @@
+---
+title: "Create mlx data"
+author: "Bryan Mayer"
+date: "3/28/2022"
+output: html_document
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F}
+
+knitr::opts_chunk$set(echo = F)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(patchwork)
+
+theme_set(theme_bw() + theme(legend.position = "top"))
+
+options(scipen = 999)
+
+# plot cutoff
+cutoff = 1.602060
+cutoffexp = substitute(expression(NULL <= a), list(a = cutoff))
+
+sum_nonmissing = function(x) sum(!is.na(x))
+hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
+
+```
+
+
+```{r load-funs-data}
+
+source(here("R", "directory-funs.R"))
+```
+
+
+
+
+## Creating MLX data
+
+
+The neutralization data will be merged onto the viral load data and pk data.
+
+- Time is important. 
+  - VL: time from first positive (days_fp). We can fit infection time as a parameter or pass it as a covariate (fp_post_inf).
+  - VL: time from enrollment (days_enrollment). 
+  - For PKPD, time is from enrollment to align for PK (days_enrollment, TIME). VL will need to be "dosed"
+
+For PKPD datasets, the demographics/covariates need to be shared for both PK and VL. So first we need to strip out the demo variables and compile that dataset.
+
+The following datasets are then generated. Initial modeling will stop at ART onset. Nomenclature: "art" will only be datasets names when art timepoints are included (and a separate section TBD):
+
+- No ART modeling
+  - Viral load models (days_fp and "infection dosing")
+    - Pooled. (time-based: amp-vl-all, dose-based: amp-dosevl-all)
+    - Placebos only. (time-based: amp-vl-placebo, dose-based: amp-dosevl-placebo)
+  - PK Models
+    - All groups: no post-infection PK data available (this is already stored: pk-data)
+  - PKPD Models
+    - Stacked datasets (amp-pkpd-dat)
+    
+```{r mlx-merge-setup}
+
+pk_stem = dplyr::select(pk_data, pub_id, AMT, DV, RATE, TIME, dose, AVISITN, DOSENO, mlx_flag, mlx_flag_strict) 
+vl_stem = vl_data %>%
+  mutate(
+    DV_log = log10(vl_num),
+    limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))
+    ) %>%
+  dplyr::filter(on_art == 0) %>%
+  dplyr::select(pub_id, TIME = days_enrollment, DV = vl_num, DV_log,
+                        days_fp, days_infection, tinf_est = fp_post_inf, cens, limit, mlx_flag, mlx_flag_strict)
+
+demo_vl = distinct(vl_data, pub_id, country)
+demo_neut_full = neut_data
+demo_neut = demo_neut_full %>% dplyr::select(-contains("cat"))
+demo_pk = pk_data %>% dplyr::filter(mlx_flag) %>% distinct(weight, study, pub_id)
+final_ptid_set = unique(demo_pk$pub_id)
+
+pkpd_demo_dat = left_join(demo_pk, demo_neut_full, by = "pub_id") %>%
+  left_join(demo_vl, by = "pub_id")
+glimpse(pkpd_demo_dat)
+stopifnot(all(!is.na(pkpd_demo_dat)))
+any(is.na(pkpd_demo_dat))
+pk_ids = pkpd_demo_dat$pub_id
+
+```
+
+### Primary data - 2+ points
+
+```{r dose-setup}
+
+viral_dose_data = vl_data %>%
+  dplyr::filter(mlx_flag) %>%
+  dplyr::distinct(pub_id, TIME = est_inf_day) %>%
+  mutate(
+    AMT = 0.01/1e3,
+    AMT_log = log10(AMT)
+    )
+glimpse(viral_dose_data)
+
+```
+
+```{r mlx-vl-all}
+
+amp_vl_all = vl_stem %>%
+  dplyr::filter(mlx_flag) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>% 
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id")
+stopifnot(n_distinct(amp_vl_all$pub_id) == 151)
+stopifnot(all(!is.na(amp_vl_all)))
+
+write_csv(amp_vl_all, mlx_data_here("amp-vl-all.csv"))
+
+placebo_vl = amp_vl_all %>%
+  dplyr::filter(!pub_id %in% final_ptid_set) 
+
+stopifnot(n_distinct(placebo_vl$pub_id) == 60)
+stopifnot(all(!is.na(placebo_vl)))
+
+placebo_vl %>%
+  write_csv(mlx_data_here("amp-vl-placebo.csv"))
+
+
+amp_dosevl_all = vl_stem %>%
+  dplyr::filter(mlx_flag) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>% 
+  dplyr::select(-days_infection, -days_fp, -tinf_est) %>%
+  bind_rows(viral_dose_data) %>%
+  arrange(pub_id, TIME) %>%
+  mutate(
+    AMT = if_else(is.na(AMT), ".", as.character(AMT)),
+    AMT_log = if_else(is.na(AMT_log), ".", as.character(AMT_log)),
+    DV = if_else(is.na(DV), ".", as.character(DV)),
+    DV_log = if_else(is.na(DV_log), ".", as.character(DV_log)),
+    cens = if_else(is.na(cens), ".", as.character(cens)),
+    limit = if_else(is.na(limit), ".", as.character(limit))
+  )
+stopifnot(n_distinct(amp_dosevl_all$pub_id) == 151)
+stopifnot(all(!is.na(amp_dosevl_all)))
+
+amp_dosevl_all %>%
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id") %>%
+  write_csv(mlx_data_here("amp-dosevl-all.csv"))
+
+```
+
+
+```{r mlx-vl-trt}
+
+placebo_data = amp_dosevl_all %>%
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id") %>%
+  dplyr::filter(!pub_id %in% final_ptid_set) 
+
+stopifnot(n_distinct(placebo_data$pub_id) == 60)
+stopifnot(all(!is.na(placebo_data)))
+
+placebo_data %>%
+  write_csv(mlx_data_here("amp-dosevl-placebo.csv"))
+
+trt_data = amp_dosevl_all %>%
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id") %>%
+  dplyr::filter(pub_id %in% final_ptid_set) 
+
+stopifnot(n_distinct(trt_data$pub_id) == 91)
+stopifnot(all(!is.na(trt_data)))
+
+trt_data %>%
+  write_csv(mlx_data_here("amp-dosevl-trt.csv"))
+
+```
+
+
+```{r mlx-pk}
+
+mlx_pk = pk_stem %>%
+  filter(mlx_flag) %>%
+  mutate(cens = "0", limit = ".")
+
+mlx_pk_out = mlx_pk %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>%
+  left_join(demo_pk, by = "pub_id")
+
+stopifnot(n_distinct(mlx_pk_out$pub_id) == 91)
+stopifnot(all(!is.na(mlx_pk_out)))
+
+write_csv(mlx_pk_out, mlx_data_here("amp-pk-dat.csv"))
+
+```
+
+```{r mlx-pkpd}
+
+pkpd_dat = amp_dosevl_all %>%
+  mutate(DVID = 2) %>%
+  bind_rows(mutate(mlx_pk, DVID = 1)) %>%
+  dplyr::filter(pub_id %in% final_ptid_set) %>%
+  left_join(pkpd_demo_dat, by = "pub_id") %>%
+  dplyr::select(-dose, -AVISITN, -DOSENO, -mlx_flag, -mlx_flag_strict) %>%
+  mutate(
+    ADM = if_else(DVID == 1 & AMT != ".", "1",
+                  if_else(DVID == 2 & AMT != ".", "2", ".")),
+    RATE = if_else(is.na(RATE), ".", RATE),
+    AMT_log = if_else(is.na(AMT_log) & DVID == 1, AMT, AMT_log),
+    DV_log = if_else(is.na(DV_log) & DVID == 1, DV, DV_log)
+  )
+
+stopifnot(n_distinct(pkpd_dat$pub_id) == 91)
+stopifnot(all(!is.na(pkpd_dat)))
+
+write_csv(pkpd_dat, mlx_data_here("amp-pkpd-dat.csv"))
+```
+
+### Primary data - 3+ points
+
+```{r dose-setup-3p}
+
+viral_dose_data_3p = vl_data %>%
+  dplyr::filter(mlx_flag_strict) %>%
+  dplyr::distinct(pub_id, TIME = est_inf_day) %>%
+  mutate(
+    AMT = 0.01/1e3,
+    AMT_log = log10(AMT)
+    )
+glimpse(viral_dose_data_3p)
+
+```
+
+```{r mlx-data-3p}
+
+amp_vl_all_3p = vl_stem %>%
+  dplyr::filter(mlx_flag_strict) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>%
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id")
+stopifnot(n_distinct(amp_vl_all_3p$pub_id) == 110)
+stopifnot(all(!is.na(amp_vl_all_3p)))
+
+write_csv(amp_vl_all_3p, mlx_data_here("amp-vl-all-3p.csv"))
+
+amp_dosevl_all_3p = vl_stem %>%
+  dplyr::filter(mlx_flag_strict) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>% 
+  dplyr::select(-days_infection, -days_fp, -tinf_est) %>%
+  bind_rows(viral_dose_data_3p) %>%
+  arrange(pub_id, TIME) %>%
+  mutate(
+    AMT = if_else(is.na(AMT), ".", as.character(AMT)),
+    AMT_log = if_else(is.na(AMT_log), ".", as.character(AMT_log)),
+    DV = if_else(is.na(DV), ".", as.character(DV)),
+    DV_log = if_else(is.na(DV_log), ".", as.character(DV_log)),
+    cens = if_else(is.na(cens), ".", as.character(cens)),
+    limit = if_else(is.na(limit), ".", as.character(limit))
+  )
+stopifnot(n_distinct(amp_dosevl_all_3p$pub_id) == 110)
+stopifnot(all(!is.na(amp_dosevl_all_3p)))
+
+amp_dosevl_all_3p %>%
+  left_join(demo_vl, by = "pub_id") %>%
+  left_join(demo_neut, by = "pub_id") %>%
+  write_csv(mlx_data_here("amp-dosevl-all-3p.csv"))
+
+pkpd_dat_3p = amp_dosevl_all_3p %>%
+  mutate(ADM = 2) %>%
+  bind_rows(mutate(filter(pk_stem, mlx_flag_strict), ADM = 1, cens = "0", limit = ".")) %>%
+  dplyr::filter(pub_id %in% final_ptid_set) %>%
+  left_join(pkpd_demo_dat, by = "pub_id") %>%
+  dplyr::select(-dose, -AVISITN, -DOSENO, -mlx_flag, -mlx_flag_strict) %>%
+  mutate(
+    RATE = if_else(is.na(RATE), ".", RATE),
+    AMT_log = if_else(is.na(AMT_log) & ADM == 1, AMT, AMT_log),
+    DV_log = if_else(is.na(DV_log) & ADM == 1, DV, DV_log)
+  )
+
+n_distinct(pkpd_dat_3p$pub_id)
+stopifnot(all(!is.na(pkpd_dat_3p)))
+
+write_csv(pkpd_dat_3p, mlx_data_here("amp-pkpd-dat-3p.csv"))
+```
+
+### ART-version of data
+
+
+```{r for-fabian}
+
+vl_art_stem = vl_data %>%
+  mutate(
+    DV_log = log10(vl_num),
+    limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))
+    ) %>%
+  dplyr::select(pub_id, TIME = days_enrollment, DV = vl_num, DV_log,
+                        days_fp, days_infection, tinf_est = fp_post_inf, cens, limit, on_art,
+                mlx_flag, mlx_flag_strict)
+
+
+vl_art = vl_art_stem %>%
+  dplyr::filter(mlx_flag) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict) %>% 
+  dplyr::select(-days_infection, -days_fp, -tinf_est) %>%
+  bind_rows(viral_dose_data) %>%
+  arrange(pub_id, TIME) %>%
+  mutate(
+    on_art = if_else(is.na(on_art), "0", as.character(on_art)),
+    AMT = if_else(is.na(AMT), ".", as.character(AMT)),
+    AMT_log = if_else(is.na(AMT_log), ".", as.character(AMT_log)),
+    DV = if_else(is.na(DV), ".", as.character(DV)),
+    DV_log = if_else(is.na(DV_log), ".", as.character(DV_log)),
+    cens = if_else(is.na(cens), ".", as.character(cens)),
+    limit = if_else(is.na(limit), ".", as.character(limit))
+  ) %>%
+  group_by(pub_id) %>%
+  mutate(any_art = as.numeric(any(on_art == "1"))) %>%
+  ungroup()
+
+stopifnot(n_distinct(vl_art$pub_id) == 151)
+stopifnot(all(!is.na(vl_art)))
+
+vl_art %>%
+  write_csv(mlx_data_here("amp-dosevl-ART.csv"))
+
+```
+
+TBD
+
+
+```{r}
+
+vl_art = vl_data %>%
+  mutate(
+    DV_log = log10(vl_num),
+    limit = if_else(cens == 1, "1e-8", ".")
+    ) %>%
+  dplyr::select(pub_id, TIME = days_enrollment, DV = vl_num, DV_log,
+                        days_fp, days_infection, tinf_est = fp_post_inf, cens, limit, mlx_flag, mlx_flag_strict)
+
+amp_vl_full = vl_art %>%
+  dplyr::filter(mlx_flag) %>%
+  dplyr::select(-mlx_flag, -mlx_flag_strict)
+
+stopifnot(n_distinct(amp_vl_all$pub_id) == 151)
+stopifnot(all(!is.na(amp_vl_all)))
+
+write_csv(amp_vl_full, mlx_data_here("art-amp-vl-all.csv"))
+```
+
+### Pooled RV217
+
+```{r}
+
+rv217 = read_csv(mlx_data_here("rv217-vl.csv"), col_types = cols())
+
+placebo_vl %>%
+  dplyr::select(-country, -nisolates, -days_infection, -tinf_est, -contains("gmt")) %>%
+  bind_rows(rv217) %>%
+  mutate(study = str_split_fixed(pub_id, "-", n = 2)[,1]) %>%
+  write_csv(mlx_data_here("amp_placebo-rv217-vl.csv"))
+
+```

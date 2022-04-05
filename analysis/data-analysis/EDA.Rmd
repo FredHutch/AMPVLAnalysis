@@ -1,0 +1,111 @@
+---
+title: "Statistical analysis of VL data"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F}
+knitr::opts_chunk$set(echo = F)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(cowplot)
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
+
+source(here("R", "directory-funs.R"))
+
+hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
+
+
+#stopifnot(dir.exists("/Volumes/trials/"))
+
+vl_lims = c(1, 7)
+ic_cats = c("< 1 mcg/mL", "1-3 mcg/mL", "> 3 mcg/mL")
+vl_title = expression(paste("Viral load (log"[10], " copies/mL)"))
+ep_labels = tibble(
+  levels = c("fp", "peak", "nadir", "mean"),
+  label = c("First positive", "Peak", "Nadir", "Mean")
+)
+
+```
+
+
+## Neutralizaiton
+
+
+```{r hill-slope}
+
+neut_data %>%
+  dplyr::filter(gmt80ls < 100) %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms), 
+    hill_mf =  hill_slope(gmt50mf, gmt80mf)  
+  ) %>%
+  gather(type, hill_slope, hill_ls:hill_mf) %>%
+  ggplot(aes(x = type, y = hill_slope )) +
+  geom_boxplot() +
+  geom_point() +
+  facet_wrap(~nisolates)
+
+neut_data %>%
+  dplyr::filter(gmt80ls < 100) %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms), 
+    hill_mf =  hill_slope(gmt50mf, gmt80mf)  
+  ) %>%
+  gather(type, hill_slope, hill_ls:hill_mf) %>%
+  ggplot(aes(x = gmt50mf, y = hill_slope, colour = type)) +
+  geom_point() +
+  scale_x_log10() +
+  facet_wrap(~nisolates)
+
+neut_data %>%
+  dplyr::filter(gmt80ls < 100) %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms), 
+    hill_mf =  hill_slope(gmt50mf, gmt80mf)  
+  ) %>%
+  gather(type, hill_slope, hill_ls:hill_mf) %>%
+  ggplot(aes(x = gmt80mf, y = hill_slope, colour = type)) +
+  geom_point() +
+  scale_x_log10() +
+  facet_wrap(~nisolates)
+
+
+neut_data %>%
+  dplyr::filter(gmt80ls < 100) %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms), 
+    hill_mf =  hill_slope(gmt50mf, gmt80mf)  
+  ) %>%
+  ggplot(aes(x = factor(gmt80mf >= 1), y = hill_mf)) +
+  geom_boxplot() +
+  geom_point() +
+  facet_wrap(~nisolates) 
+
+```
+
+
+```{r}
+
+neut_data %>%
+  ggplot(aes(x = gmt50ls, y = gmt80ls)) +
+  geom_point() +
+  facet_wrap(~nisolates)
+
+neut_data %>%
+  ggplot(aes(x = gmt50ms, y = gmt80ms)) +
+  geom_point() +
+  facet_wrap(~nisolates)
+
+```
