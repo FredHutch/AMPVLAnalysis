@@ -2,7 +2,7 @@ Data Processing
 =================
 
 
-- 1. Clean up the raw viral load data
+- 1. Clean up the raw neut and viral load data
 - 2. Basic diagnostics, combine the neutralization and viral load data
 - 3. Create mlx data
 

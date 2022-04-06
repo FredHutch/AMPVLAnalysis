@@ -1,16 +1,14 @@
 ---
-title: "Diagnostic of data"
+title: "Data processing and analysis data generation"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
 output: html_document
 ---
 
-The focus here is evaluating the total measurements, censoring, and 
-
-
 ```{r load-packages, echo = FALSE, message=F,output=F}
-knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
+library(janitor)
 library(tidyverse)
 library(here)
 library(glue)
@@ -26,6 +24,16 @@ cutoff = 1.602060
 cutoffexp = substitute(expression(NULL <= a), list(a = cutoff))
 
 sum_nonmissing = function(x) sum(!is.na(x))
+diffdays = function(x, y) as.numeric(difftime(mdy(x), mdy(y), units = "days"))
+
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+save_shared_folder = F
+if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
 
 ```
 
@@ -37,43 +45,50 @@ source(here("R", "directory-funs.R"))
 ```{r load-data}
 
 neut_data = read_csv(clean_data_here("amp-neut-blinded.csv"), col_types = cols())
-vl_data = read_csv(clean_data_here("full_vl_data.csv"), col_types = cols())
-pk_data = read_csv(clean_data_here("pk-data.csv"), col_types = cols())
+vl_data_all = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
+time_data = read_csv(clean_data_here("ptid-time-data.csv"), col_types = cols())
+pk_data_nm = read_csv(clean_data_here("pk-nm-data.csv"), col_types = cols())
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
-pk_key = read_csv(raw_data_here("pk-key.csv"), col_types = cols())
 infected_ids = rx_dat %>% dplyr::filter(pub_id %in% neut_data$pub_id) %>% pull(pub_id)
 
 ```
 
 
-## Overview
+## Overview and roadmap
 
-There are three key files to this analysis:
+There are four pieces to this processing:
 
-1) The viral load data
-2) The neutralization data
+1) The neutralization data
+2) The viral load data
+    - determine final filtered set
+    -  unblind
 3) The PK data
+    - de-monolix
+    - unblind
+    - restrict to filtered
+    - merge on additional relevant data (time/demo)
+    - create time variables
+4) final datasets - merge on the neut to PK and VL data, save
 
-The goal of this script is to QC the cleaned version of those datasets. Specifically, whether every infection is included in the analysis correctly.
+
+The goal of this script is to QC the cleaned version of those datasets to determine the final analysis data with the final cohort of participants. Specific
+
+For NLME modeling, additional processing is required and done in a subsequent markdown (`03_create-mlx-data.Rmd`). 
+
+## Background
 
 From the NEJM paper:
 
 Table 2: There were 67 placebo infections and 107 VRC01 infections (174 total ptids)
 Figure 2: There were 64 placebo IC80s (19+10+35) and 98 VRC01 IC80s (70 + 19 + 9) (162 total ptids)
-Viral load data totals?
 
 ## Notes from raw data processing
 
 ## Neutralization data
 
-For neutralization, all of the ptids are available. Subsetting on nisolates gives 174 ptids, then 12 of those are missing gmt80ls measurement (162 total). 
+For neutralization, this data was already gently cleaned. The raw neutralization data contained 174 ptids, but 12 of those were designated nisolates = 0 (missing gmt80 measurements) and were excluded. The remaining 162 total participants matches NEJM sample size.
 
-**Question.** Was this missingness assumed to be random, how should we deal with this if it doesn't matched the viral load data.
-
-Plot the VLs of those ptids in the viral load data section below. These data will be merged on viral load data for modeling exercises.
-
-The relationship between IC50 and IC80 estimates are relatively consistent (with some noise) across the `nisolates` and generally points to a hill slope of around 1.3. The hill slope does not obviously correlate with level of sensitivity, but there might be some evidence that the slope flattens at high resistance. This may speak to the unreliability of IC50 or IC80 measurements > 10, the cutoff of Fig 3 PE plot in NEJM.
-
+No additional processing was needed for the neut data.
 
 ```{r neut-exploration}
 
@@ -83,70 +98,70 @@ neut_data %>%
   dplyr::select(-pub_id, -nisolates) %>%
   summarize(across(everything(), list(n = sum_nonmissing)))
 
-neut_data %>%
-  group_by(nisolates) %>%
-  summarize(n(), .groups = "drop") %>%
-  kable() %>% kable_styling(full_width = F)
-
-gmodels::CrossTable(neut_data$gmt50ls < 100, neut_data$gmt80ls < 100,
-                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
-
-gmodels::CrossTable(neut_data$gmt50ms < 100, neut_data$gmt80ms < 100,
-                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
-
-gmodels::CrossTable(neut_data$gmt80ms < 100, neut_data$gmt80ls < 100,
-                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
 ```
 
 ```{r neut-by-trt}
 
-neut_data %>%
+neut_data %>% 
   left_join(rx_dat, by = "pub_id") %>%
   group_by(trt = rx_code2) %>%
   summarize(n(), .groups = "drop") %>%
-  kable(caption="Neut data by trt") %>% kable_styling(full_width = F)
+  kable(caption="Neut. data sample size by trt") %>% kable_styling(full_width = F)
 
 ```
 
 ## Viral load data
 
-There are 220 participants in this dataset: so 46 not included in the infection list used in the NEJM paper. 45/46 of these ptids were not flagged for infection by week 80, the primary endpoint. The 46th participant dxdt is 87 weeks following enrdt (84 weeks from estimated infection time). 
-All of the pubids in the neutralization data are here though.
-
-The data below are restricted to those that met the primary endpoint criteria. Among them, 13 definitely do not have enough data for modeling. Will leave the 46 ptids with 2 time points in for now, but that is very limited data.
-
-**Data will be restricted to ptids who have at least 2 detectable VL measurements off of ART that also have available neutralization data (ie, met primary infection endpoint). This removed 5 ptids total (151/162).**
-
-There were also 3 rows that were duplicated and removed.
-
 ```{r vl-exploration}
 
-glimpse(vl_data)
+glimpse(vl_data_all)
 
-vl_data %>% distinct(pub_id, infection_pre80wks, has_neut_data) %>%
-  group_by(infection_pre80wks, has_neut_data) %>% 
+```
+
+### Sample size assessment
+
+There are 220 participants in this dataset: so 46 not included in the infection list used in the NEJM paper. These participants were all infected at least 86 weeks following enrollment and didn't meet primary endpoint requirements. The 12 ptids in the neut data with missing data are in  the viral load dataset but will be removed because they lack the neutralization data.
+
+The `has_neut_data` and `infection_pre85wks` flags were previously merged onto these data and confirmed that 162 participants remain when the data is filtered on these two flags.
+
+```{r vl-unblind}
+
+vl_data_unblind = vl_data_all %>% 
+  left_join(rx_dat, by = "pub_id")
+
+```
+
+
+```{r vl-full-sample}
+
+vl_data_unblind %>% distinct(pub_id, infection_pre85wks, has_neut_data) %>%
+  group_by(infection_pre85wks, has_neut_data) %>% 
   summarize(n(), .groups = "drop") %>%
   kable() %>% kable_styling(full_width = F)
 
-measurement_summary = vl_data %>%
-  filter(days_dx >= 0 & infection_pre80wks & has_neut_data) %>%
-  group_by(pub_id, has_neut_data) %>%
+```
+
+
+**Data will be additionally restricted to ptids who have at least 2 detectable VL measurements starting with first positive and ending with  ART.**
+
+Among the 162 participants, 4 do not have enough data for analysis leaving 158 ptids. Note: a previous version of this analysis used diagnosis time, but this was later than first positive for 31 participants.
+
+```{r}
+
+measurement_summary = vl_data_unblind %>%
+  filter(days_fp >= 0 & infection_pre85wks & has_neut_data) %>%
+   group_by(pub_id, has_neut_data, protocol) %>%
   summarize(
-    peak_vl = max(vl_num),
-    peak_vl_no_art = max(vl_num[on_art == 0]),
+    peak_vl = max(vl),
+    peak_vl_no_art = max(vl[on_art == 0]),
     total_measurements = n(),
-    total_measurements_pos = length(vl[cens == 0]),
-    total_pos_offart = length(vl[on_art == 0 & cens == 0]),
+    total_measurements_pos = length(vl[cens != 1]),
+    total_pos_offart = length(vl[on_art == 0 & cens != 1]),
     total_pos_onart = n() - total_measurements_pos
   , .groups = "drop") %>%
-  gather(key, total, -pub_id, -peak_vl, -peak_vl_no_art, -has_neut_data) 
+  gather(key, total, -pub_id, -peak_vl, -peak_vl_no_art, -has_neut_data, -protocol) 
 
-measurement_summary %>%
-  ggplot(aes(x = total, fill = factor(has_neut_data))) +
-  geom_histogram(binwidth = 1) +
-  facet_wrap(~key) +
-  scale_x_continuous("VL measurements per ptid (post dx)", breaks = 0:15) +
-  scale_y_continuous("Total ptids", breaks = 10 * 0:15)
+with(measurement_summary, ftable(key))
 
 measurement_summary %>%
   dplyr::filter(key == "total_pos_offart") %>%
@@ -157,7 +172,16 @@ measurement_summary %>%
     , .groups = "drop") %>%
   mutate(total_pos_vl = if_else(total_pos_vl < 5, as.character(total_pos_vl), "> 4")) %>%
   select(-key) %>%
-  kable(caption = "Sample sizes for total detectable VL (no ART)") %>% kable_styling(full_width = F)
+  adorn_totals() %>%
+  write_csv(here("output/data-processing", "measurement-sample-size.csv")) %>%
+  kable(caption = "Sample sizes for total detectable VL (no ART) - Table saved in output/data-processing") %>% kable_styling(full_width = F)
+
+measurement_summary %>%
+  ggplot(aes(x = total, fill = factor(has_neut_data))) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(~key) +
+  scale_x_continuous("VL measurements per ptid (post dx)", breaks = 0:15) +
+  scale_y_continuous("Total ptids", breaks = 10 * 0:15)
 
 measurement_summary %>%
   dplyr::filter(key == "total_pos_offart") %>%
@@ -180,65 +204,16 @@ measurement_summary %>%
   theme(strip.placement = "outside", strip.background = element_blank(), panel.spacing = unit(0, "lines"),
         panel.border = element_rect(colour = "gray"))
 
-low_sample_ptids = measurement_summary %>%
-  dplyr::filter(key == "total_pos_offart" & total <= 1) %>%
-  select(pub_id) %>%
-  unlist() %>% unname()
-
-strict_sample_ptids = measurement_summary %>%
-  dplyr::filter(key == "total_pos_offart" & total <= 2) %>%
-  select(pub_id) %>%
-  unlist() %>% unname()
-
-```
-
-
-```{r vl-neut-exploration}
-
-neut_data %>%
-  subset(pub_id %in% low_sample_ptids) %>%
-  select(nisolates, gmt80mf)
-
-vl_data %>%
-  dplyr::filter(!has_neut_data & infection_pre80wks) %>%
-  ggplot(aes(x = days_dx, y = vl_num)) +
-  geom_point(aes(shape = factor(cens != 0), colour = factor(on_art))) +
-  geom_line() +
-  scale_y_log10() +
-  geom_vline(aes(xintercept = est_inf_day - dx_day), colour = "red") +
-  geom_vline(aes(xintercept = fp_day - dx_day)) +
-  labs(shape = "censored") +
-  facet_wrap(~pub_id) +
-  theme(strip.text = element_blank()) +
-  ggtitle("VL data for ptids with missing neutralization data")
-
-```
-
-```{r flag-vl, echo = T}
-
-nrow(vl_data)
-vl_data = vl_data %>%
-  mutate(
-    mlx_flag = has_neut_data==1 & (!pub_id %in% low_sample_ptids),
-    mlx_flag_strict = has_neut_data==1 & (!pub_id %in% strict_sample_ptids)
-  ) %>%
-  distinct() 
-nrow(vl_data)
-
-vl_data %>% dplyr::filter(mlx_flag) %>% distinct(pub_id) %>% nrow()
-
 ```
 
 ```{r vl-data-trt}
 
-vl_data %>% 
-  left_join(rx_dat, by = "pub_id") %>%
-  distinct(pub_id, infection_pre80wks, has_neut_data, trt = rx_code2) %>%
-  group_by(infection_pre80wks, has_neut_data, trt) %>% 
+vl_data_unblind %>%
+  distinct(pub_id, infection_pre85wks, has_neut_data, trt = rx_code2) %>%
+  group_by(infection_pre85wks, has_neut_data, trt) %>% 
   summarize(n(), .groups = "drop") %>%
   pivot_wider(names_from = "trt", values_from = "n()") %>%
   kable() %>% kable_styling(full_width = F)
-
 
 measurement_summary %>%
   dplyr::filter(key == "total_pos_offart") %>%
@@ -251,7 +226,9 @@ measurement_summary %>%
   pivot_wider(names_from = "trt", values_from = "total_ptids") %>%
   mutate(total_pos_vl = if_else(total_pos_vl < 5, as.character(total_pos_vl), "> 4")) %>%
   select(-key) %>%
-  kable(caption = "Sample sizes for total detectable VL (no ART)") %>% kable_styling(full_width = F)
+  adorn_totals() %>%
+  write_csv(here("output/data-processing", "measurement-sample-size_grp.csv")) %>%
+  kable(caption = "Sample sizes for total detectable VL (no ART) - saved to output/data-processing") %>% kable_styling(full_width = F)
 
 measurement_summary %>%
   dplyr::filter(key == "total_pos_offart") %>%
@@ -267,42 +244,158 @@ measurement_summary %>%
 
 ```
 
+```{r analysis-pubids}
+
+low_sample_ptids = measurement_summary %>%
+  dplyr::filter(key == "total_pos_offart" & total <= 1) %>%
+  select(pub_id) %>%
+  unlist() %>% unname()
+
+strict_sample_ptids = measurement_summary %>%
+  dplyr::filter(key == "total_pos_offart" & total <= 2) %>%
+  select(pub_id) %>%
+  unlist() %>% unname()
+
+```
+
+
+Neut. data for the low measurement sample participants.
+
+```{r vl-neut-exploration}
+
+neut_data %>%
+  subset(pub_id %in% low_sample_ptids) %>%
+  select(pub_id, nisolates, gmt80mf)
+
+```
+
 ### PK Data
 
-This data has been carefully processed by the hvtn. It is case-control data though, so there will be uninfected participants in these data. As expected, there are 107 infected participants, and there is data for the 98 ptids with available neutralization data. Seven of those were flagged as having limited viral load data and are filtered, leaving 91 ptids available for PKPD analysis.
+This data has been carefully processed by the hvtn. It is case-control data (1:1), so there will be uninfected but treated participants in these data. 
 
-```{r pk-data-load}
+As expected, there are data for the 98 ptids with available neutralization data matching the 98 treated ptids in the VL data
 
-pk_data = pk_data %>%
+```{r nm-pk-overview}
+
+glimpse(pk_data_nm)
+
+pk_data_nm = pk_data_nm %>%
   mutate(
-    infection_pre80wks = pub_id %in% unique(subset(vl_data, infection_pre80wks)$pub_id),
-    has_neut_data = pub_id %in% neut_data$pub_id,
-    mlx_flag = has_neut_data==1 & (!pub_id %in% low_sample_ptids),
-    mlx_flag_strict = has_neut_data==1 & (!pub_id %in% strict_sample_ptids)
-  )
-glimpse(pk_data)
+    infection_pre85wks = pub_id %in% unique(subset(vl_data_all, infection_pre85wks & has_neut_data)$pub_id),
+    has_neut_data = pub_id %in% neut_data$pub_id
+    )
 
-
-n_distinct(subset(pk_data, has_neut_data)$pub_id)
-n_distinct(subset(pk_data, mlx_flag)$pub_id)
-
-pk_data %>% distinct(pub_id, infection_pre80wks, has_neut_data, mlx_flag) %>%
-  group_by(infection_pre80wks, has_neut_data, mlx_flag) %>% 
+pk_data_nm %>% distinct(pub_id, infection_pre85wks, has_neut_data) %>%
+  group_by(infection_pre85wks, has_neut_data) %>% 
   summarize(n(), .groups = "drop") %>%
   kable() %>% kable_styling(full_width = F)
 
+pk_data_nm %>%
+  mutate(tmp = pub_id %in% neut_data$pub_id) %>%
+  dplyr::filter(tmp) %>%
+  pull(pub_id) %>%
+  n_distinct() 
+
+n_distinct(subset(pk_data_nm, has_neut_data)$pub_id)
+
 ```
+
+To create the analysis dataset (and eventual PKPD dataset), the processing must:
+ - de-nonmem/monolix the data: remove the '.''s, collapse the staggered dosing variables, drop ID, rename the variables
+ - unblind (it's already technically unblinded), but can verify the unblinding matches
+ - create the relevant time variables
+ - restrict to ptids with neut/vl data filter out those with limited viral load data (should just be two ptids): 96 ptids
+
+```{r pk-data-clean}
+
+ pk_data_stem = pk_data_nm %>%
+  dplyr::filter(has_neut_data & infection_pre85wks) %>%
+  # remove . = NA, convert back to numeric
+  mutate(across(everything(), ~na_if(., "."))) %>%
+  mutate(across(c(AMT, DV, RATE), as.numeric)) %>%
+  mutate(dose_row = !is.na(AMT) & is.na(DV)) %>%
+  group_by(ID) %>%
+  mutate(no_followup = all(dose_row)) %>% # 15 people drop out after first infusion
+  # collapse dosing rows into long-format
+  group_by(ID, DOSENO) %>%
+  arrange(-dose_row, TIME) %>% # fixes time issues
+  mutate(
+    dose_mg = zoo::na.locf(AMT),
+    infustion_rate = zoo::na.locf(RATE),
+    infusion_day = min(TIME) 
+  ) %>%
+  ungroup() %>%
+  arrange(ID, TIME) %>%
+  # remove dose rows, rename and remove variables
+  dplyr::filter(!dose_row | no_followup) %>%
+  dplyr::select(pub_id, everything(), -ID, -AMT, -AVISITN, -RATE, -dose_row) %>%
+  rename(days_enrollment = TIME, concentration = DV, infusion_no = DOSENO) %>%
+  left_join(rx_dat, by = "pub_id") %>%
+  left_join(dplyr::select(time_data, -has_neut_data, -infection_pre85wks), by = "pub_id") %>%
+  mutate(
+    days_fp = days_enrollment - fp_day,
+    days_dx = days_enrollment - dx_day,
+    days_tpf = days_enrollment - tpf_day
+  )
+
+glimpse(pk_data_stem)
+
+n_distinct(pk_data_stem$pub_id)
+n_distinct(subset(pk_data_stem, no_followup)$pub_id)
+n_distinct(subset(pk_data_stem, !is.na(concentration))$pub_id)
+
+```
+
+Time-diagnostics:
+
+```{r}
+range(pk_data_stem$days_dx)
+range(pk_data_stem$days_fp)
+range(pk_data_stem$days_tpf)
+```
+
+Other variables:
 
 ```{r pk-data-checks}
 
-pk_id_check = pk_data %>%
-  distinct(ID) %>%
-  left_join(pk_key, by = "ID") %>% 
-  select(pub_id) %>%
-  left_join(rx_dat, by = "pub_id") 
-
-nrow(subset(pk_data, ID %in% pk_id_check$pub_id & has_neut_data))
-nrow(subset(pk_data, ID %in% pk_id_check$pub_id & infection_pre80wks))
+with(pk_data_stem, ftable(study, protocol))
+with(pk_data_stem, ftable(dose, rx_code2)) # can drop this variable
 
 ```
 
+## Create final analysis datasets
+
+```{r}
+
+neut_merge= dplyr::select(neut_data, -contains("cat")) 
+
+vl_data_analysis = vl_data_unblind %>%
+  dplyr::filter(!pub_id %in% low_sample_ptids & on_art == 0 & has_neut_data & infection_pre85wks) %>%
+  left_join(neut_merge, by = "pub_id") %>%
+  mutate(log10vl = log10(vl), rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
+
+n_distinct(vl_data_analysis$pub_id)
+stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
+
+pk_data_analysis = pk_data_stem %>% dplyr::filter(!pub_id %in% low_sample_ptids & has_neut_data & infection_pre85wks) %>%
+  left_join(neut_merge, by = "pub_id") %>%
+  mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
+
+n_distinct(pk_data_analysis$pub_id)
+stopifnot(n_distinct(pk_data_analysis$pub_id) == 96)
+
+write_csv(dplyr::select(vl_data_analysis, -flag), clean_data_here("adata-vl.csv"))
+write_csv(dplyr::select(pk_data_analysis, -dose), clean_data_here("adata-pk.csv"))
+
+```
+
+
+```{r save-shared, eval = save_shared_folder}
+
+
+write_csv(dplyr::select(vl_data_analysis, -flag, -has_neut_data, -infection_pre85wks, -rx),
+                         "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-viral-loads.csv")
+
+
+write_csv(dplyr::select(pk_data_analysis, -dose, -has_neut_data, -infection_pre85wks, -rx),
+                         "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-pk.csv")

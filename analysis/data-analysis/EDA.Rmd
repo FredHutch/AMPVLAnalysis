@@ -38,6 +38,22 @@ ep_labels = tibble(
 
 ## Neutralizaiton
 
+```{r}
+neut_data %>%
+  group_by(nisolates) %>%
+  summarize(n(), .groups = "drop") %>%
+  kable(caption = "Sample size by total breakthrough isolates") %>% kable_styling(full_width = F)
+
+gmodels::CrossTable(neut_data$gmt50ls < 100, neut_data$gmt80ls < 100,
+                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
+
+gmodels::CrossTable(neut_data$gmt50ms < 100, neut_data$gmt80ms < 100,
+                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
+
+gmodels::CrossTable(neut_data$gmt80ms < 100, neut_data$gmt80ls < 100,
+                     prop.r=F, prop.c=F, prop.t=F, prop.chisq=F) 
+
+```
 
 ```{r hill-slope}
 
@@ -95,6 +111,10 @@ neut_data %>%
 
 ```
 
+
+
+
+The relationship between IC50 and IC80 estimates are relatively consistent (with some noise) across the `nisolates` and generally points to a hill slope of around 1.3. The hill slope does not obviously correlate with level of sensitivity, but there might be some evidence that the slope flattens at high resistance. This may speak to the unreliability of IC50 or IC80 measurements > 10, the cutoff of Fig 3 PE plot in NEJM.
 
 ```{r}
 

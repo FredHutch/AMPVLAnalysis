@@ -30,14 +30,6 @@ ep_labels = tibble(
   label = c("First positive", "Peak", "Nadir", "Mean")
 )
 
-```
-
-
-```{r pull-blinding}
-
-# loads rx_dat
-#source(here("data-raw/unblind-loc.R"))
-rx_dat = read_csv(here("data-raw/rx_dat.csv"))
 rx_lab = tibble(
   rx_code2 = c("C", "T1", "T2"),
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
@@ -45,12 +37,11 @@ rx_lab = tibble(
 
 ```
 
+
 ```{r load-data}
 
 # note there is more upstream processing to clean the original data
-neut_data = read_csv(mlx_data_here("clean_source/amp-neut-blinded.csv"), col_types = cols())
-vl_data = read_csv(mlx_data_here("clean_source/vl_data.csv"), col_types = cols()) %>%
-  left_join(rx_dat, by = "pub_id")
+vl_data = read_csv(mlx_data_here("clean_source/adata_vl_data.csv"), col_types = cols())
 
 ```
 
@@ -121,13 +112,10 @@ measurement_summary %>%
   dplyr::select(-key, RX = rx_code2) %>%
   kable(caption = "Sample sizes") %>% kable_styling(full_width = F)
 
-
-
 ```
 
 
 ```{r final-adata}
-
 
 vl_data_analysis_full = vl_data %>%
   dplyr::filter(!pub_id %in% low_sample_ptids & on_art == 0 & has_neut_data) %>%

@@ -27,7 +27,7 @@ find_firstpositive = function(censor_flag, dates){
   as.character(format(min(mdy(pos_dates)), '%m-%d-%Y'))
 }
 
-save_data = F
+save_data = T
 
 ```
 
@@ -168,8 +168,6 @@ final_vl_data_prep %>%
         panel.grid.minor.x = element_blank(), panel.grid.major.x = element_blank())
 ```
 
-Some additional error checking.
-
 There were three duplicated rows, removed here and creating the final data set tagging on the infection through week 85 flag.
 
 ```{r}
@@ -197,6 +195,25 @@ setdiff(excluded_ids, odd_ids)
 setdiff(odd_ids, excluded_ids)
 
 all(unique(subset(final_vl_data, has_neut_data & infection_pre85wks)$pub_id) %in% neut_data$pub_id)
+
+```
+
+Looking at the VL of the 12 ptids in the neut dataset with missing data.
+
+```{r vl-no-neut}
+
+final_vl_data %>%
+  dplyr::filter(!has_neut_data & infection_pre85wks) %>%
+  ggplot(aes(x = days_dx, y = vl)) +
+  geom_point(aes(shape = factor(cens != 0), colour = factor(on_art))) +
+  geom_line() +
+  scale_y_log10() +
+  geom_vline(aes(xintercept = tpf_day - dx_day), colour = "red") +
+  geom_vline(aes(xintercept = fp_day - dx_day)) +
+  labs(shape = "censored") +
+  facet_wrap(~pub_id) +
+  theme(strip.text = element_blank()) +
+  ggtitle("VL data for ptids with missing neutralization data")
 
 ```
 
@@ -255,12 +272,14 @@ subset(dans_data, pid == "703-0203")
 
 ```
 
-The engineered time variables are extracted for each participant to be saved separately as a meta dataset.
+### Pull time/demo data
+
+The engineered time variables with other demographics are extracted for each participant to be saved separately as a meta dataset.
 
 ```{r create-time-data}
 # pull out infection time data
 ptid_time_data = final_vl_data %>%
-  select(pub_id, infection_pre85wks, has_neut_data, 
+  select(pub_id, protocol, country, infection_pre85wks, has_neut_data, 
          enrdt, dxdt, artstartdt, fpdt, tpfdt, 
          ends_with("_day"), dx_post_tpf, fp_post_tpf) %>%
   distinct()
