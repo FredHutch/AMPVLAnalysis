@@ -1,0 +1,309 @@
+---
+title: "Processing raw neutralization and viral load data"
+author: "Bryan Mayer"
+date: "04/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(usethis)
+library(here)
+library(lubridate)
+source(here("R", "directory-funs.R"))
+theme_set(theme_bw())
+
+# -------- processing functions --------
+
+diffdays = function(x, y) as.numeric(difftime(mdy(x), mdy(y), units = "days"))
+
+# note that censor_flag == -1 denoted upper censoring (so a positive still)
+find_firstpositive = function(censor_flag, dates){
+  if(!any(censor_flag != 1)) return(NA_character_)
+  pos_dates = dates[censor_flag != 1]
+  # a character in this format is consistent with other date variables in the raw data
+  as.character(format(min(mdy(pos_dates)), '%m-%d-%Y'))
+}
+
+save_data = F
+
+```
+
+## Background
+
+Cleaning the raw neutralization data: removing HIV- and missing neut data
+
+Raw VL data: Combining and cleaning. Main challenges are managing time and censoring.
+
+
+```{r load-raw}
+
+v703_vl = read_csv(raw_data_here("AMP Data for Modeling files/v703_viral_loads_blinded.csv"))
+v704_vl = read_csv(raw_data_here("AMP Data for Modeling files/v704_viral_loads_blinded.csv"))
+raw_vl_data = bind_rows(v703_vl, v704_vl)
+
+rx_dat = read_csv(raw_data_here('rx_dat.csv'))
+
+dans_data = read_csv(raw_data_here("DR-amp-vl-blinded.csv"))
+
+```
+
+
+## Neutralization data
+
+There were 174 HIV+ ptids in the neut data. 12 of those have nisolates = 0 (missing gmt data), and are removed leading to 162.
+
+```{r clean-neut}
+
+#this is locally stored but has some mild processing
+
+ic_cols = c("gmt50ms", "gmt80ms", "gmt50ls", "gmt80ls", "gmt50mf", "gmt80mf")
+
+raw_neut = read_csv(raw_data_here("AMP Data for Modeling files/amp_survival_wk80_tau_neut_blinded.csv"), 
+                    guess_max = 5000) %>%
+  dplyr::filter(hiv1event == 1)
+
+nrow(raw_neut)
+with(raw_neut, ftable(nisolates, is.na(gmt80ls)))
+
+neut_data = raw_neut %>%
+  dplyr::filter(!is.na(nisolates) & nisolates > 0) %>%
+  select(pub_id, nisolates, contains("gmt")) %>%
+  mutate(across(all_of(ic_cols), parse_number))
+  
+nrow(neut_data)
+n_distinct(neut_data$pub_id)
+
+```
+
+
+```{r save-neut, eval = save_data}
+
+write_csv(neut_data, clean_data_here("amp-neut-blinded.csv"))
+
+```
+
+## Viral load data
+
+### Main processing
+
+Checking sample sizes from different data sets, checking match with infected ids and syncing to neut data.
+
+There are 58 (220-162) extra participants in the viral load dataset. Twelve were in the raw neut data with 174 participants. The remaining 46 are all in the unblinding file and require additional investigation after further processing (they don't meet the infection primary endpoint time requirement). 
+
+```{r data-checks}
+
+infected_ids = rx_dat %>% dplyr::filter(pub_id %in% neut_data$pub_id) %>% pull(pub_id)
+length(infected_ids)
+
+# all infections are in the vl data
+setdiff(infected_ids, unique(raw_vl_data$pub_id))
+
+# no missing neuts
+length(intersect(infected_ids, unique(subset(neut_data, !is.na(gmt80ls))$pub_id)))
+
+# 58 (220-162) ptids are in the viral load data sets but were not assayed for neutralization (also not counted as infected in NEJM)
+odd_ids = setdiff(unique(raw_vl_data$pub_id), infected_ids)
+length(odd_ids)
+
+length(intersect(odd_ids, raw_neut$pub_id))
+
+all(odd_ids %in% rx_dat$pub_id)
+
+```
+
+```{r process-data}
+
+# three mutates:
+# 1) cleaning the variables
+# 2) by pub_id, get the first positive date
+# 3) subsequent day/time calculations
+
+final_vl_data_prep = raw_vl_data %>%
+  dplyr::select(-MITT_flag, -statuswk104, -statuswk80, -assaytyp, -result, -resultc, -comments) %>%
+  rename(tpfdt = est, raw_vl = vl) %>% #time poisson fitter
+  mutate(
+    study = if_else(protocol == "HVTN 703", 1, 2),
+    has_neut_data = pub_id %in% neut_data$pub_id,
+    cens = if_else(str_detect(raw_vl, ">"), -1, if_else(str_detect(raw_vl, "<"), 1, 0)),
+    vl = parse_number(raw_vl)
+  ) %>%
+  group_by(pub_id) %>%
+  mutate(
+    fpdt = find_firstpositive(cens, drawdt),
+    any_art = any(!is.na(artstartdt))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    on_art = if_else(!is.na(artstartdt), as.numeric(diffdays(drawdt, artstartdt) >= 0), 0),
+    art_day = if_else(!is.na(artstartdt), diffdays(artstartdt, enrdt), Inf),
+    dx_day = diffdays(dxdt, enrdt),
+    fp_day = diffdays(fpdt, enrdt),
+    tpf_day = diffdays(tpfdt, enrdt),
+    dx_post_tpf = diffdays(dxdt, tpfdt),
+    fp_post_tpf = diffdays(fpdt, tpfdt),
+    days_enrollment = diffdays(drawdt, enrdt),
+    days_dx = diffdays(drawdt, dxdt),
+    days_fp = diffdays(drawdt, fpdt),
+    days_tpf = diffdays(drawdt, tpfdt)
+  ) 
+
+
+```
+
+Looking at the diagnosis time and the data missing from the neutralization data. Week 85 seems to be the cutoff, maybe there is a window on week 80 requirement.
+
+```{r vl-time-endpoint}
+
+final_vl_data_prep %>%
+  distinct(pub_id, dx_day, has_neut_data) %>%
+  ggplot(aes(x = reorder(pub_id, dx_day), y = dx_day/7, 
+             colour = factor(pub_id %in% odd_ids & !pub_id %in% raw_neut$pub_id))) +
+  geom_point() +
+  geom_hline(yintercept = 85) +
+  theme(legend.position = "top", 
+        axis.ticks.x = element_blank(), axis.text.x = element_blank(),
+        panel.grid.minor.x = element_blank(), panel.grid.major.x = element_blank())
+```
+
+Some additional error checking.
+
+There were three duplicated rows, removed here and creating the final data set tagging on the infection through week 85 flag.
+
+```{r}
+
+nrow(final_vl_data_prep)
+sum(duplicated(final_vl_data_prep))
+
+final_vl_data = distinct(final_vl_data_prep) %>%
+  mutate(infection_pre85wks = dx_day <= 85 * 7)
+nrow(final_vl_data)
+
+```
+
+Check on the infection_pre85wks, confirm that all pub_ids excluded using this criteria are consistent with the set difference between the viral load data (220) and the non-missing neutralization data (162). This flag captures the 12 ptids in the neut data with missing values.
+
+```{r data-dx-1}
+
+final_vl_data %>% distinct(pub_id, infection_pre85wks, has_neut_data) %>%
+  group_by(infection_pre85wks, has_neut_data) %>% summarize(n(), `.groups` = "drop")
+
+excluded_ids = final_vl_data %>% dplyr::filter(!infection_pre85wks | !has_neut_data) %>% 
+  pull(pub_id) %>% unique()
+length(excluded_ids)
+setdiff(excluded_ids, odd_ids)
+setdiff(odd_ids, excluded_ids)
+
+all(unique(subset(final_vl_data, has_neut_data & infection_pre85wks)$pub_id) %in% neut_data$pub_id)
+
+```
+
+### Additional diagnostics
+
+look at poisson-fitter infection times
+
+```{r data-dx-tpf}
+
+test_inftime = final_vl_data %>%
+  #dplyr::filter(is.na(est)) %>%
+  distinct(pub_id, flag, tpfdt, dxdt, dx_post_tpf, has_neut_data)
+
+test_inftime %>%
+  group_by(flag, has_neut_data) %>%
+  summarize(n(), `.groups` = "drop")
+
+ggplot(test_inftime, aes(x = flag, y = dx_post_tpf, colour = factor(has_neut_data))) + 
+  geom_point() +
+  coord_flip() + theme(axis.text.y = element_text(size = 4))
+```
+
+
+The diagnosis day may be far away from the infection time, here are 31 cases where first positive time is prior to diagnoses. Potentially this results from retrospective sample assays. This suggests that using the dx time is not preferable to relying on the viral load data.
+
+```{r data-dx-dxvsfp}
+
+fp_first_all = subset(final_vl_data, dx_day > fp_day)
+n_distinct(fp_first_all$pub_id)
+
+fp_first_analysis = subset(final_vl_data, dx_day > fp_day & has_neut_data & infection_pre85wks)
+n_distinct(fp_first_analysis$pub_id)
+with(fp_first_analysis, range(dx_day - fp_day))
+
+fp_first_analysis %>%
+  dplyr::filter(days_dx > -150) %>%
+  ggplot(aes(x = days_dx, y = log10(vl))) +
+  geom_point() +
+  geom_line() +
+  geom_vline(aes(xintercept = fp_day-dx_day)) +
+  facet_wrap(~pub_id, nrow = 8)
+
+```
+
+Censored on diagnosis day. The ptid with neut data is actually one of the case above.
+
+```{r data-dx-cens}
+# checking for censored VL on diagnosis day: one case of interest
+final_vl_data %>%
+  dplyr::filter(dxdt == drawdt & raw_vl == "<20") %>%
+  distinct(pub_id, flag, tpfdt, dxdt, dx_post_tpf, has_neut_data)
+
+subset(final_vl_data, pub_id == "703-0203") %>%
+  select(days_dx, days_fp, days_tpf, days_enrollment, on_art, vl)
+subset(dans_data, pid == "703-0203")
+
+```
+
+The engineered time variables are extracted for each participant to be saved separately as a meta dataset.
+
+```{r create-time-data}
+# pull out infection time data
+ptid_time_data = final_vl_data %>%
+  select(pub_id, infection_pre85wks, has_neut_data, 
+         enrdt, dxdt, artstartdt, fpdt, tpfdt, 
+         ends_with("_day"), dx_post_tpf, fp_post_tpf) %>%
+  distinct()
+
+stopifnot(nrow(ptid_time_data) == 220)
+
+# 2 people have no tpf but no neut data either
+stopifnot(all(ptid_time_data$fp_post_tpf > 0, na.rm = T))
+stopifnot(all(ptid_time_data$dx_post_tpf > 0, na.rm = T))
+
+```
+
+```{r save-dat, eval = save_data}
+write_csv(ptid_time_data, file = clean_data_here("ptid-time-data.csv"))
+write_csv(final_vl_data, file = clean_data_here("full-vl-data.csv"))
+```
+
+
+```{r, extended-survival, eval = F, include = F}
+library(survival)
+library(survminer)
+
+hiv_event_time_check = fp_first_analysis %>%
+  dplyr::filter(days_dx == 0) %>%
+  select(pub_id, days_enrollment) %>%
+  left_join(rx_dat, by = "pub_id") %>%
+  left_join(select(raw_neut, pub_id, hiv1survday), by = "pub_id")
+
+full_neut = read_csv(raw_data_here("AMP Data for Modeling files/amp_survival_wk80_tau_neut_blinded.csv"), guess_max = 5000, col_types = cols()) %>%
+  left_join(rx_dat, by= "pub_id")
+
+main_fit = survfit(Surv(hiv1survday, hiv1event) ~ rx_code2, data = full_neut) 
+ggsurvplot(main_fit, data = full_neut, ylim = c(0.95, 1))
+pairwise_survdiff(Surv(hiv1survday, hiv1event) ~ rx_code2, data = full_neut, p.adjust.method = "none") 
+
+full_neut_alt = fp_first_analysis %>%
+  dplyr::filter(days_fp == 0) %>%
+  select(pub_id, new_surv_day = days_enrollment) %>%
+  right_join(full_neut, by = "pub_id") %>%
+  mutate(hiv1survday2 = if_else(is.na(new_surv_day), hiv1survday, new_surv_day))
+
+alt_fit = survfit(Surv(hiv1survday2, hiv1event) ~ rx_code2, data = full_neut_alt) 
+ggsurvplot(alt_fit, data = full_neut_alt, ylim = c(0.95, 1))
+pairwise_survdiff(Surv(hiv1survday2, hiv1event) ~ rx_code2, data = full_neut_alt, p.adjust.method = "none")
+
+```
