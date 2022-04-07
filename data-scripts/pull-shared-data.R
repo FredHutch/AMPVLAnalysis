@@ -35,5 +35,6 @@ stopifnot(n_distinct(pk_key$pub_id) == n_distinct(pk_data$ID))
 
 pk_data %>%
   left_join(pk_key, by = "ID") %>%
-  write_csv(clean_data_here("pk-nm-data.csv")) 
+  write_csv(clean_data_here("pk-nm-data.csv")) %>%
+  write_csv(mlx_data_here("pk-nm-data.csv"))
 

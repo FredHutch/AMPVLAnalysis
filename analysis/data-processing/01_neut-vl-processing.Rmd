@@ -279,6 +279,9 @@ The engineered time variables with other demographics are extracted for each par
 ```{r create-time-data}
 # pull out infection time data
 ptid_time_data = final_vl_data %>%
+  group_by(pub_id) %>%
+  mutate(final_vl_day = max(days_enrollment)) %>%
+  ungroup() %>%
   select(pub_id, protocol, country, infection_pre85wks, has_neut_data, 
          enrdt, dxdt, artstartdt, fpdt, tpfdt, 
          ends_with("_day"), dx_post_tpf, fp_post_tpf) %>%
