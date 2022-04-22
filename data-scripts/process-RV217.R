@@ -3,7 +3,7 @@ library(usethis)
 library(here)
 source(here("R", "directory-funs.R"))
 
-rv217 =  read_csv(mlx_data_here("clean_source/RV217-VL_APTIMA.csv"), col_types = cols()) %>%
+rv217 =  read_csv(raw_data_here("RV217-VL_APTIMA.csv"), col_types = cols()) %>%
   rename(days_dx = time, DV_log = y)
 
 rv217_out = rv217 %>%
@@ -30,4 +30,4 @@ with(rv217_out, ftable(days_fp == 0, DV_log < 1.181))
 
 rv217_out %>%
   dplyr::select(-ID, -days_dx, -contains("rel")) %>%
-  write_csv(file = mlx_data_here("rv217-vl.csv"))
+  write_csv(file = clean_data_here("rv217-vl.csv"))
