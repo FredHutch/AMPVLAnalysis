@@ -66,7 +66,7 @@ fix_pk_parms_cc = function(){
 }
 
 
-.setup_effector_parms = function(initial_vals, est = "MLE", est_tau = "FIXED"){
+setup_effector_parms = function(initial_vals, est = "MLE", est_tau = "FIXED"){
 
   setPopulationParameterInformation(
     tau_pop = list(initialValue = initial_vals$tau_pop, method = est_tau)
@@ -79,7 +79,7 @@ fix_pk_parms_cc = function(){
     aS_pop = list(initialValue = initial_vals$aS_pop, method = est),
     dS_pop = list(initialValue = initial_vals$dS_pop, method = est),
     lBt0_pop = list(initialValue = initial_vals$lBt0_pop, method = est),
-    dI_pop = list(initialValue = initial_vals$lBt0_pop, method = est),
+    dI_pop = list(initialValue = initial_vals$dI_pop, method = est),
     lp_pop = list(initialValue = initial_vals$lp_pop, method = est),
     k_pop = list(initialValue = 1, method = "FIXED"),
     w_pop = list(initialValue = initial_vals$w_pop, method = est),
@@ -88,6 +88,39 @@ fix_pk_parms_cc = function(){
     )
 
 }
+
+
+setup_precursor_parms = function(initial_vals, est = "MLE", est_tau = "FIXED"){
+  
+  setIndividualParameterVariability(k = F, f = F)
+  setIndividualParameterDistribution(lBt0 = "normal", lp = "normal")
+
+  setPopulationParameterInformation(
+    aS_pop = list(initialValue = initial_vals$aS_pop, method = est),
+    dS_pop = list(initialValue = initial_vals$dS_pop, method = est),
+    lBt0_pop = list(initialValue = initial_vals$lBt0_pop, method = est),
+    dI_pop = list(initialValue = initial_vals$dI_pop, method = est),
+    lp_pop = list(initialValue = initial_vals$lp_pop, method = est),
+    k_pop = list(initialValue = 1, method = "FIXED"),
+    f_pop = list(initialValue = 0.9, method = "FIXED"),
+    w_pop = list(initialValue = initial_vals$w_pop, method = est),
+    dP_pop = list(initialValue = initial_vals$dP_pop, method = est),
+    dE_pop = list(initialValue = initial_vals$dE_pop, method = est),
+    NP_pop = list(initialValue = initial_vals$NP_pop, method = est)
+  )
+  
+}
+
+set_holte_est_infection_times = function(){
+  setIndividualParameterDistribution(initT = "normal")
+  setIndividualParameterVariability(initT = F)
+  setCovariateModel(initT = c(holte_est = T))
+  setPopulationParameterInformation(
+    initT_pop = list(initialValue = 0, method = "FIXED"),
+    beta_initT_holte_est = list(initialValue = 1, method = "FIXED")
+  )
+}
+
 
 .fix_vl_error = function(input_parms){
 

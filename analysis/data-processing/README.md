@@ -6,4 +6,6 @@ Data Processing
 - 2. Basic diagnostics, combine the neutralization and viral load data
 - 3. Create mlx data
 
-All of these scripts save data in data/processed-data or in the output/data-processing/ folders.
+The first two scripts save data in data/processed-data or in the output/data-processing/ folders. Monolix (mlx) data is saved in the data/mlx-data/ folder.
+
+Processing details are in the rendered html files.

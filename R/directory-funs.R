@@ -18,7 +18,7 @@ raw_data_here = function(file = ""){
 }
 
 clean_data_here <- function(file = "", list_files = F) {
-  if(list_files) list.files(here("data", "processed-data"))
+  if(list_files) print(list.files(here("data", "processed-data")))
   here("data", "processed-data", file)
 }
 

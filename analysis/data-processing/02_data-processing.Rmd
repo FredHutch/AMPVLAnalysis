@@ -367,12 +367,13 @@ with(pk_data_stem, ftable(dose, rx_code2)) # can drop this variable
 
 ```{r}
 
-neut_merge= dplyr::select(neut_data, -contains("cat")) 
+neut_merge = dplyr::select(neut_data, -contains("cat")) 
 
+# this covariate definition provided by Peter, used in NEJM model
 vl_data_analysis = vl_data_unblind %>%
   dplyr::filter(!pub_id %in% low_sample_ptids & on_art == 0 & has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
-  mutate(log10vl = log10(vl), rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
+  mutate(log10vl = log10(vl), rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))  
 
 n_distinct(vl_data_analysis$pub_id)
 stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
@@ -384,6 +385,7 @@ pk_data_analysis = pk_data_stem %>% dplyr::filter(!pub_id %in% low_sample_ptids 
 n_distinct(pk_data_analysis$pub_id)
 stopifnot(n_distinct(pk_data_analysis$pub_id) == 96)
 
+write_csv(measurement_summary, clean_data_here("ptid-measurement-counts.csv"))
 write_csv(dplyr::select(vl_data_analysis, -flag), clean_data_here("adata-vl.csv"))
 write_csv(dplyr::select(pk_data_analysis, -dose), clean_data_here("adata-pk.csv"))
 

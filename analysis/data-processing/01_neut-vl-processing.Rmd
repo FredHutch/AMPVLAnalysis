@@ -1,7 +1,7 @@
 ---
 title: "Processing raw neutralization and viral load data"
 author: "Bryan Mayer"
-date: "04/05/2022"
+date: "05/11/2022"
 output: html_document
 ---
 
@@ -12,6 +12,7 @@ library(tidyverse)
 library(usethis)
 library(here)
 library(lubridate)
+library(kableExtra)
 source(here("R", "directory-funs.R"))
 theme_set(theme_bw())
 
@@ -120,6 +121,7 @@ all(odd_ids %in% rx_dat$pub_id)
 # 1) cleaning the variables
 # 2) by pub_id, get the first positive date
 # 3) subsequent day/time calculations
+# 4) add NEJM study region variable
 
 final_vl_data_prep = raw_vl_data %>%
   dplyr::select(-MITT_flag, -statuswk104, -statuswk80, -assaytyp, -result, -resultc, -comments) %>%
@@ -136,6 +138,7 @@ final_vl_data_prep = raw_vl_data %>%
     any_art = any(!is.na(artstartdt))
   ) %>%
   ungroup() %>%
+  # TIME VARIABLES
   mutate(
     on_art = if_else(!is.na(artstartdt), as.numeric(diffdays(drawdt, artstartdt) >= 0), 0),
     art_day = if_else(!is.na(artstartdt), diffdays(artstartdt, enrdt), Inf),
@@ -148,8 +151,20 @@ final_vl_data_prep = raw_vl_data %>%
     days_dx = diffdays(drawdt, dxdt),
     days_fp = diffdays(drawdt, fpdt),
     days_tpf = diffdays(drawdt, tpfdt)
-  ) 
-
+  ) %>%
+  # STUDY REGION VARIABLE
+  mutate(
+    study_region_code = case_when(
+      protocol == "HVTN 703" & country == "South Africa" ~ 1,
+      protocol == "HVTN 703" & country != "South Africa" ~ 2,
+      protocol == "HVTN 704" & country %in% c("United States", "Switzerland") ~ 3,
+      protocol == "HVTN 704" & !country %in% c("United States", "Switzerland") ~ 4,
+      T ~ NA_real_
+    ),
+    study_region_cat = factor(study_region_code, levels = 1:4,
+                              labels = c("South Africa/703", "Not South Africa/703", "US or Switzerland/704", "South America/704")
+    )
+  )
 
 ```
 
@@ -269,6 +284,28 @@ final_vl_data %>%
 subset(final_vl_data, pub_id == "703-0203") %>%
   select(days_dx, days_fp, days_tpf, days_enrollment, on_art, vl)
 subset(dans_data, pid == "703-0203")
+
+```
+
+
+Check study region mapping
+
+```{r check-country}
+
+final_vl_data %>%
+  unite(protocol_country, protocol, country) %>%
+  distinct(pub_id, study_region_cat, protocol_country) %>%
+  group_by(study_region_cat, protocol_country) %>%
+  tally() %>%
+  spread(study_region_cat, n, fill = 0) %>%
+  separate(protocol_country, into = c("protocol", "country"), sep = "_") %>%
+  janitor::adorn_totals("col") %>%
+  janitor::adorn_totals() %>%
+  kable(caption = "Study region breakdown among VL participants") %>%
+  kable_styling(full_width = F)
+
+stopifnot(all(!is.na(final_vl_data$study_region_code)))
+stopifnot(all(!is.na(final_vl_data$study_region_cat)))
 
 ```
 

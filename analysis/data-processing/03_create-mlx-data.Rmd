@@ -7,7 +7,7 @@ output: html_document
 
 ```{r load-packages, echo = FALSE, message=F,output=F}
 
-knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(tidyverse)
 library(here)
@@ -26,7 +26,7 @@ cutoffexp = substitute(expression(NULL <= a), list(a = cutoff))
 sum_nonmissing = function(x) sum(!is.na(x))
 hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
 
-read_csv_quiet = function(...) read_csv(..., col_types = )
+read_csv_quiet = function(...) read_csv(..., col_types = cols())
 
 rbind_dose = function(vl_dat, dose_data, ptid_subset){
   vl_dat %>%
@@ -42,6 +42,20 @@ rbind_dose = function(vl_dat, dose_data, ptid_subset){
     limit = if_else(is.na(limit), ".", as.character(limit))
   )
 }
+
+rbind_pk = function(vl_dat, pk_dat){
+  vl_dat %>%
+    bind_rows(mutate(pk_dat, DVID = 1, cens = "0", limit = ".")) %>%
+    dplyr::select(-dose) %>%
+    mutate(
+      ADM = if_else(DVID == 1 & AMT != ".", "1",
+                    if_else(DVID == 2 & AMT != ".", "2", ".")),
+      RATE = if_else(is.na(RATE), ".", RATE),
+      AMT_log = if_else(is.na(AMT_log) & DVID == 1, AMT, AMT_log),
+      DV_log = if_else(is.na(DV_log) & DVID == 1, DV, DV_log)
+    ) 
+}
+
 
 ```
 
@@ -80,9 +94,16 @@ raw_nm_pk = read_csv_quiet(clean_data_here("pk-nm-data.csv"))
 rv217 = read_csv_quiet(clean_data_here("rv217-vl.csv"))
 
 infection_times = read_csv_quiet(clean_data_here("ptid-time-data.csv")) %>% dplyr::select(pub_id, tpf_day, fp_day) %>%
-  left_join(dplyr::select(read_csv_quiet(here("output/vl-analysis/=")), pub_id = id, rel_holte_day = initT_mode), by = "pub_id") %>%
+  left_join(dplyr::select(read_csv_quiet(here("output/vl-analysis/estimatedIndividualParameters.txt")), pub_id = id, rel_holte_day = initT_mode), by = "pub_id") %>%
   mutate(holte_day = fp_day - rel_holte_day, rel_tpf_day = fp_day - tpf_day) %>%
   dplyr::filter(!is.na(tpf_day) & !is.na(holte_day))
+
+infection_times_rv217 = rv217 %>%
+  dplyr::filter(days_fp == 0) %>%
+  dplyr::select(pub_id, fp_day = TIME) %>%
+  left_join(transmute(read_csv_quiet(raw_data_here("Estimates_pNLME.csv")) , pub_id = paste0("RV217-", pid), rel_holte_day = det_avg), by = "pub_id") %>%
+  mutate(holte_day = fp_day - rel_holte_day) 
+stopifnot(all(!is.na(infection_times_rv217)))
 
 demo_vl = dplyr::select(adata_vl, pub_id, country, contains("gmt"), nisolates, protocol, study, rx_code2) %>% distinct()
 demo_pk = dplyr::distinct(raw_nm_pk, pub_id, weight)
@@ -153,7 +174,7 @@ viral_dose_data_dxpf = infection_times %>%
     AMT_log = log10(AMT)
     )
 
-viral_dose_data_rv217 = xxx %>%
+viral_dose_data_rv217 = infection_times_rv217 %>%
   dplyr::distinct(pub_id, TIME = holte_day) %>%
   mutate(
     AMT = 0.01/1e3,
@@ -170,7 +191,7 @@ glimpse(viral_dose_data_rv217)
 
 TBD? VL data for all groups. Would be used for fitting Holte model. Done separately by Dan currently.
 
-```{r mlx-vl-all. eval = F}
+```{r mlx-vl-all, eval = F}
 
 amp_vl_all = vl_stem %>%
   left_join(all_demo, by = "pub_id") %>%
@@ -188,7 +209,8 @@ write_csv(amp_vl_all, mlx_data_here("amp-vl-all.csv"))
 placebo_vl = vl_stem %>%
   dplyr::filter(pub_id %in% final_placebo_ptids) %>%
   left_join(all_demo, by = "pub_id") %>%
-  dplyr::select(-weight)
+  dplyr::select(-weight) %>%
+  left_join(dplyr::select(infection_times, pub_id, holte_est = rel_holte_day), by = "pub_id")
 
 stopifnot(n_distinct(placebo_vl$pub_id) == 62)
 stopifnot(all(!is.na(placebo_vl)))
@@ -218,39 +240,47 @@ stopifnot(all(amp_dosevl_placebo_dxpf$rx_code2 == "C"))
 
 ```{r rv217-data}
 
-rv217_dose = rbind_dose(rv217, viral_dose_data_rv217, unique(rv217$pub_id)) %>%
+rv217_vl = rv217 %>%
+  left_join(dplyr::select(infection_times_rv217, pub_id, holte_est = rel_holte_day), by = "pub_id") %>%
   mutate(protocol = "RV217")
+
+rv217_dose = rbind_dose(dplyr::select(rv217, -days_fp), viral_dose_data_rv217, unique(rv217$pub_id)) %>%
+  mutate(protocol = "RV217")
+
+
+stopifnot(n_distinct(rv217_vl$pub_id) == 46)
+stopifnot(all(!is.na(rv217_vl)))
+
+stopifnot(n_distinct(rv217_dose$pub_id) == 46)
+stopifnot(all(!is.na(rv217_dose)))
 
 ```
 
 
-```{r combine-placebo-rv217}
+```{r save-placebo-rv217}
+
+placebo_vl %>%
+  mutate(holte_est = round(holte_est)) %>%
+  mutate_all(as.character) %>%
+  replace(is.na(.), ".") %>%
+  write_csv(mlx_data_here("ampPlaceboHoltet0.csv"))
+
+placebo_vl %>%
+  bind_rows(rv217_vl) %>%
+  mutate(holte_est = round(holte_est)) %>%
+  mutate_all(as.character) %>%
+  replace(is.na(.), ".") %>%
+  write_csv(mlx_data_here("ampPlaceboHoltet0-rv217.csv"))
 
 amp_dosevl_placebo_holte %>%
-  dplyr::select(-country, -nisolates, -contains("gmt"), -study, -rx_code2) %>%
   bind_rows(rv217_dose) %>%
+  mutate_all(as.character) %>%
+  replace(is.na(.), ".") %>%
   write_csv(mlx_data_here("ampPlaceboHoltet0-rv217-vldose.csv"))
 
 ```
 
 ### VRC01 groups
-
-```{r bind-pk-fun}
-
-bind_pk = function(vl_dat, pk_dat){
-  vl_dat %>%
-    bind_rows(mutate(pk_dat, DVID = 1, cens = "0", limit = ".")) %>%
-    dplyr::select(-dose) %>%
-    mutate(
-      ADM = if_else(DVID == 1 & AMT != ".", "1",
-                    if_else(DVID == 2 & AMT != ".", "2", ".")),
-      RATE = if_else(is.na(RATE), ".", RATE),
-      AMT_log = if_else(is.na(AMT_log) & DVID == 1, AMT, AMT_log),
-      DV_log = if_else(is.na(DV_log) & DVID == 1, DV, DV_log)
-    ) 
-}
-
-```
 
 ```{r trt-vl}
 
@@ -271,11 +301,11 @@ stopifnot(all(!is.na(amp_dosevl_trt_dxpf)))
 ```{r amp-pkpd}
 
 pkpd_dat_holte = amp_dosevl_trt_holte %>%
-  bind_pk(pk_stem) %>%
+  rbind_pk(pk_stem) %>%
   left_join(all_demo, by = "pub_id")
 
 pkpd_dat_dxpf = amp_dosevl_trt_dxpf %>%
-  bind_pk(pk_stem) %>%
+  rbind_pk(pk_stem) %>%
   left_join(all_demo, by = "pub_id")
 
 stopifnot(n_distinct(pkpd_dat_holte$pub_id) == 43+53)

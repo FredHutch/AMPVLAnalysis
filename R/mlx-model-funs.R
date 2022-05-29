@@ -63,7 +63,7 @@ amp_recipe <- function(model_text_file, data_file, variable_types,
 
   set_project_settings(...)
 
-  if("DV" %in% variable_types$var_name){
+  if("DV" %in% subset(log10vl_pool_types, type!="ignore")$var_name){
     setErrorModel(DV = error_model)
     setObservationDistribution(DV = obs_dist)
   } else{
