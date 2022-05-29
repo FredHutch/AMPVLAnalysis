@@ -1,0 +1,356 @@
+---
+title: "Cohort tables for VL analysis"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
+knitr::opts_chunk$set(echo = F)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(cowplot)
+library(janitor)
+library(table1)
+```
+
+
+```{r setup}
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
+
+source(here("R", "directory-funs.R"))
+
+paste_range0 = function(x) paste_range(x, digits = 0)
+paste_range = function(x, digits = 2) paste(round(range(x), digits = digits), collapse = ", ")
+
+#stopifnot(dir.exists("/Volumes/trials/"))
+
+vl_lims = c(1, 7)
+ic_cats = c("< 1 mcg/mL", "1-3 mcg/mL", "> 3 mcg/mL")
+vl_title = expression(paste("Viral load (log"[10], " copies/mL)"))
+ep_labels = tibble(
+  levels = c("fp", "peak", "nadir", "mean"),
+  label = c("First positive", "Peak", "Nadir", "Mean")
+)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+```
+
+
+```{r load-data}
+
+measurement_summary = read_csv(clean_data_here("ptid-measurement-counts.csv"), col_types = cols())
+vl_data_all = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
+vl_data_final = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
+
+rx_map = rx_dat %>% select(pub_id, rx_code2) %>%
+  mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat),
+         .keep = "unused")
+
+study_region_map = distinct(vl_data_final, study_region_code, study_region_cat)
+
+demo_vars = distinct(vl_data_all, pub_id, study_region_code, any_art, protocol) %>%
+  left_join(rx_map, by = "pub_id") %>%
+  mutate(study_region_cat = factor(study_region_code, 
+                                   levels = study_region_map$study_region_code,
+                                   labels = study_region_map$study_region_cat),
+         any_art = factor(any_art, levels = c(F, T), labels = c("No", "Yes")))
+
+neut_vars = distinct(vl_data_final, pub_id, nisolates, gmt80ls) %>%
+  mutate(ic80gte1 = gmt80ls>=1)
+
+```
+
+
+# Background
+
+Outline the cohort information, and highlight data that we need as we are performing the analysis. 
+
+  - Sample sizes and total measurements, designated by pre- and post-ART
+  - By group and protocol
+  - Baseline covariates:
+    - Geo-location/protocol (AMP paper): (1) South Africa/703, (2) not South Africa/703, (3) US or Switzerland/704, (4) South America/704.  
+  - Other covariates:
+    - total isolates
+    - neutralization (how do we downselect this variable). least sensitive IC80 used in NEJM paper
+  
+PG: I would think this table would include information on available VL data pre and post ART initiation for all of the scheduled viral load sampling visits.  And indeed the basic flow stuff about numbers randomized, numbers acquiring HIV, and of those numbers with viral load data by visit.  Ideally the table would orient to the data available by IC80 >= 1 and IC80 < 1
+
+
+# Results
+
+## Table 1s
+
+```{r prep-table1}
+
+table1_prep = measurement_summary %>%
+  dplyr::filter(key %in% c("total_measurements", "total_pos_offart")) %>%
+  dplyr::select(pub_id, key, total) %>%
+  pivot_wider(names_from = "key", values_from = "total") %>%
+  dplyr::mutate(across(c(total_pos_offart, total_measurements), 
+                       ~fct_relevel(factor(if_else(. < 5, as.character(.), "> 4")),
+                                    "> 4", after = Inf))
+  ) %>%
+  left_join(demo_vars, by = "pub_id") %>%
+  left_join(neut_vars, by = "pub_id") %>%
+  mutate(
+    ic80gte1 = factor(ic80gte1, levels = c(F, T), 
+                      labels = c("< 1 mcg/mL", bquote(">= 1 mcg/mL"))),
+    nisolates = factor(nisolates)
+    ) 
+
+label(table1_prep$study_region_cat) = "Region/Protocol"
+label(table1_prep$ic80gte1) = "IC80 (least sensitive)"
+label(table1_prep$nisolates) = "Total isolates"
+label(table1_prep$any_art) = "ART use"
+label(table1_prep$total_measurements) = "Total VL measurements <br>(post-first positive)"
+label(table1_prep$total_pos_offart) = "Total positive VL<br>(pre-ART)"
+
+
+var_formula = "~ study_region_cat + any_art + ic80gte1 + nisolates + total_measurements + total_pos_offart"
+
+```
+
+### By VRC01 groups
+
+```{r table1-grp-overall}
+
+table1(as.formula(paste(var_formula, "| rx_lab")), 
+       data=table1_prep, caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group.")
+
+```
+
+### By protocol and VRC01 groups
+
+```{r table1-bygroup}
+
+ table1(as.formula(paste(var_formula, "| rx_lab*protocol")),
+        data=table1_prep, 
+        caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group and Protocol.")
+
+```
+
+## Measurements by visit
+
+Visit schedule (Appendix G from the protocol): 
+
+```{r scheduled-visit}
+
+dx_visit_schedule = tribble(
+  ~visitno, ~expected_day, ~expected_wk,
+  "v.x", "diagnosis", "W0",
+  "v.y", "D14", "W2",
+  "31", "D28", "W4",
+  "32", "D42", "W6",
+  "33", "D56", "W8",
+  "34", "D84", "W12",
+  "35", "D168", "W24"
+)
+
+dx_visit_schedule %>%
+  kable(caption = "visit no. by diagnosis.") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r pre-dx-fp}
+
+fp_pre_dx = vl_data_all %>%
+  dplyr::filter(days_dx < 0 & days_fp >= 0 & has_neut_data) %>%
+  mutate(visitno_tmp = "Pre-Diagnosis")
+
+fp_pre_dx_summary = fp_pre_dx %>%
+  group_by(visitno_tmp) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+  ) 
+
+fp_pre_dx_summary
+
+```
+
+There are some visitno labeled for dx-day, but should probably actually be labeled with the 30 conventions.
+
+```{r dx-data}
+
+dx_dat = vl_data_all %>%
+  dplyr::filter(has_neut_data & floor(visitno) == floor(dxvisit) & days_dx >= 0) %>%
+   mutate(
+     visitno_tmp_x = round(visitno - floor(dxvisit), 1),
+     visitno_tmp_check = if_else(days_dx == 0, 0, round(visitno - floor(dxvisit), 1)),
+     visitno_tmp = if_else(days_dx == 0, "v.x", "v.y")
+     )
+
+dx_visits_afterd22 = subset(dx_dat, days_dx>22) 
+tmp = subset(vl_data_all, pub_id %in% dx_visits_afterd22$pub_id & days_dx > 0)
+check_dx = ggplot(tmp, aes(x = visitno, y = days_dx)) + geom_point() + geom_line()+ facet_wrap(~pub_id)
+
+dx_dat %>%
+  group_by(visitno_tmp_x) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+  ) 
+
+dx_dat %>%
+  group_by(visitno_tmp_check) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+  ) 
+
+dx_dat_summary = dx_dat %>%
+  group_by(visitno_tmp) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+  ) 
+
+dx_dat_summary
+
+```
+
+```{r post-dx-data}
+
+post_dx_dat = vl_data_all %>%
+  dplyr::filter(days_dx >= 0 & visitno >= 31 & visitno < 40 & has_neut_data) %>%
+  mutate(visitno_tmp = as.character(floor(visitno)))
+
+post_dx_dat_summary = post_dx_dat %>%
+  group_by(visitno_tmp) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+  ) 
+
+```
+
+```{r visitno-summary}
+
+fp_pre_dx_summary %>%
+  bind_rows(dx_dat_summary) %>%
+  bind_rows(post_dx_dat_summary) %>%
+  ungroup() %>%
+  rename(visitno = visitno_tmp) %>%
+  left_join(dx_visit_schedule, by = "visitno") %>%
+  select(visitno, N, n, `Expected Day` = expected_day, `Mean day (range)` = avg_day_range) %>%
+  adorn_totals() %>%
+  kable(caption = "VL Measurements by post-dx visit numbers and corresponding study days. Days post-diagnosis. N = total participants, n = total measurements.", digits = 2) %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r alt-cutoffs}
+
+cuts = c(-125, 0, 1, 22, 38, 52, 70, 140, 197, 400) 
+
+vl_data_dx_cut = vl_data_all %>%
+  dplyr::filter(has_neut_data) %>%
+  mutate(
+    days_dx_cut = cut(days_dx, breaks = cuts, include.lowest = T, right = F)
+  ) %>%
+  dplyr::filter(days_fp >= 0 | days_dx >= 0 & days_dx <= 196) %>%
+  left_join(neut_vars, by = "pub_id") %>%
+  left_join(dplyr::select(demo_vars, pub_id, rx_lab), by = "pub_id") %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
+                      labels = c("IC80 < 1 mcg/mL", bquote("IC80 >= 1 mcg/mL"))),
+    pre_art = factor(if_else(on_art == 0, "Pre-ART", "Post-ART"), levels = c("Pre-ART", "Post-ART")),
+    nisolates = factor(nisolates)
+    ) 
+  
+vl_data_dx_cut %>%
+  group_by(days_dx_cut) %>%
+  summarize(N = n_distinct(pub_id),
+            n = n()) %>%
+  dplyr::select(`Post-dx days range` = days_dx_cut, everything()) %>%
+  adorn_totals()  %>%
+  kable(caption = "VL Measurements based on diagnosis date not visit. N = total participants, n = total measurements.", digits = 2) %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r, full-visit-setup}
+
+counts_only = function (x, ..., na.is.category = TRUE) {
+    c("", sapply(stats.apply.rounding(stats.default(x, ...), 
+        ...), function(y) with(y, sprintf("%s", FREQ))))
+}
+label(vl_data_dx_cut$days_dx_cut) = "Post-dx study days range"
+
+```
+
+
+```{r by-art}
+
+table1(~days_dx_cut|rx_lab + pre_art, data = vl_data_dx_cut, render.categorical = counts_only, caption = "Measurement counts by ART-status and VRC01 groups.")
+
+```
+
+
+
+```{r by-grp-ic80}
+
+table1(~days_dx_cut|rx_lab + ic80gte1, data = vl_data_dx_cut, render.categorical = counts_only,
+       caption = "Pre-ART measurement counts by VRC01 groups and IC80 cutoffs.")
+
+```
+
+
+```{r full-visitno-post-dx}
+
+post_dx_dat %>%
+  group_by(visitno) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_dx = mean(days_dx),
+    day_dx_range = paste_range0(days_dx)
+  ) %>%
+  kable(caption = "Full description of post-dx visit numbers", digits = 2) %>%
+  kable_styling(full_width = F)
+
+```
+
+## Demographics (more details)
+
+```{r check-country}
+
+vl_data_all %>%
+  dplyr::filter(has_neut_data) %>%
+  unite(protocol_country, protocol, country) %>%
+  distinct(pub_id, study_region_cat, protocol_country) %>%
+  group_by(study_region_cat, protocol_country) %>%
+  tally() %>%
+  spread(study_region_cat, n, fill = 0) %>%
+  separate(protocol_country, into = c("protocol", "country"), sep = "_") %>%
+  janitor::adorn_totals("col") %>%
+  janitor::adorn_totals() %>%
+  kable(caption = "Study region breakdown among VL participants") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+
+<!-----
+**everything below is old, due to copying and pasting of document placeholder**
+
+---->

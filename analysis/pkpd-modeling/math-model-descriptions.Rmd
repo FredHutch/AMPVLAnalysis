@@ -1,0 +1,189 @@
+---
+title: "Mathematical Models"
+author: "Bryan Mayer"
+date: "5/5/2022"
+output:
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(tidyverse)
+library(kableExtra)
+```
+
+
+## Holte Model
+
+\begin{align*}
+\frac{\mathrm{d}S}{\mathrm{d}t} &= a_S - d_SS - \beta SV\\
+\frac{\mathrm{d}I}{\mathrm{d}t} &= \beta SV - \kappa I^{n+1}\\
+\frac{\mathrm{d}V}{\mathrm{d}t} &= \pi I - gV - \beta SV
+\end{align*}
+
+This model has been previously fit in RSIF timing paper.
+
+
+
+## Effector Model with Unproductive Cells (Reeves)
+
+\begin{align*}
+\frac{\mathrm{d}S}{\mathrm{d}t} &= a_S - d_SS - \beta SV\\
+\frac{\mathrm{d}I_{UP}}{\mathrm{d}t} &= (1-\tau)(1-\lambda)\beta SV - d_II_{UP} - kEI_{UP}\\
+\frac{\mathrm{d}I_{P}}{\mathrm{d}t} &= \tau(1-\lambda)\beta SV - d_II_{P} - kEI_{P} \\
+\frac{\mathrm{d}L}{\mathrm{d}t} &= \lambda\beta SV - th_LL\\
+\frac{\mathrm{d}E}{\mathrm{d}t} &= a_E + wI\frac{E}{E+E_{50}} - d_EE\\
+\frac{\mathrm{d}V}{\mathrm{d}t} &= \pi I_P - gV - \beta SV\\
+I &= I_{P}+I_{UP}
+\end{align*}
+
+
+```{r parm-values}
+
+parm_vals = tribble(
+  ~parameter, ~value,
+  "$a_S$", "fitted",
+  "$d_S$", "fitted",
+  "$\\beta$", "fitted (log-scale)",
+  "$\\tau$", "0.05",
+  "$\\lambda$", "$1x10^{-4}$",
+  "$d_I$", "fitted or fixed to 0.8",
+  "$k$", "1", 
+  "$th_L$", "$5.2x10^{-4}$",
+  "$a_E$", "$1x10^{-4}$",
+  "$d_E$", "fitted",
+  "$w$", "fitted",
+  "$E50$", "fitted",
+  "$\\pi$", "fitted (log-scale)",
+  "$g$", "23",
+  "$S_0$", "$a_S/d_S$",
+  "$E_0$", "$a_E/d_E$",
+  "$V_0$", "$0.01/1e3$",
+  "$I_{P,0}$", "$gV_0/p$",
+  "$\\sum I_0$", "$\\frac{I_{P,0}}{\\tau (1-\\lambda)}$",
+  "$I_{UP,0}$", "$(1-\\tau) (1-\\lambda)\\sum I_0$",
+  "$L_0$", "$\\lambda\\sum I_0$"
+)
+
+parm_vals %>% 
+  kable(
+    caption = "EFfector model parameters",
+    format = "latex",
+    escape = FALSE,
+    align = "llrr",
+    booktabs = T
+  ) %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+## Pre-cursor Immune Model (Borducchi, Prague aka Hill)
+
+This model does not include effector (CD8) function.
+https://www.biorxiv.org/content/10.1101/700401v2.full.pdf
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5145754/
+
+Unclear if we'll fit a version of this model, it is specialized and parameterized for SIV analysis, specifically the lack of CD8 effect.
+
+\begin{align*}
+\frac{\mathrm{d}S}{\mathrm{d}t} &= a_S - d_SS - \beta SV\\
+\frac{\mathrm{d}I}{\mathrm{d}t} &= \frac{\beta SV}{1 + \frac{E}{N_E}} - d_II\\
+\frac{\mathrm{d}P}{\mathrm{d}t} &= a_P + w(1-f)\frac{V}{V+N_P}P - d_PP\\
+\frac{\mathrm{d}E}{\mathrm{d}t} &= wf\frac{V}{V+N_P}P - d_EE\\
+\frac{\mathrm{d}V}{\mathrm{d}t} &= \pi I - gV 
+\end{align*}
+
+## Pre-cursor Effector Model
+
+This model is the Hill model with effector function and growth depending on infected cell levels.
+
+\begin{align*}
+\frac{\mathrm{d}S}{\mathrm{d}t} &= a_S - d_SS - \beta SV\\
+\frac{\mathrm{d}I}{\mathrm{d}t} &= \beta SV - d_II - kEI\\
+\frac{\mathrm{d}P}{\mathrm{d}t} &= a_P + w(1-f)\frac{I}{I+N_P}P - d_PP\\
+\frac{\mathrm{d}E}{\mathrm{d}t} &= wf\frac{I}{I+N_P}P - d_EE\\
+\frac{\mathrm{d}V}{\mathrm{d}t} &= \pi I - gV - \beta SV
+\end{align*}
+
+
+```{r pre-cursor-parm-values}
+
+parm_vals = tribble(
+  ~parameter, ~value,
+  "$a_S$", "fitted",
+  "$d_S$", "fitted",
+  "$\\beta$", "fitted (log-scale)",
+  "$d_I$", "fitted or fixed to 0.8",
+  "$k$", "1", 
+  "$a_P$", "$1x10^{-5}$",
+  "$d_P$", "fitted",
+  "$d_E$", "fitted",
+  "$f$", "0.9 (from Prague)",
+  "$w$", "fitted",
+  "$N_P$", "fitted",
+  "$\\pi$", "fitted (log-scale)",
+  "$g$", "23",
+  "$S_0$", "$a_S/d_S$",
+  "$I_0$", "$gV_0/p$",
+  "$P_0$", "$a_P/d_P$",
+  "$E_0$", "0",
+  "$V_0$", "$0.01/1e3$"
+)
+
+parm_vals %>% 
+  kable(
+    caption = "Effector model parameters",
+    format = "latex",
+    escape = FALSE,
+    align = "llrr",
+    booktabs = T
+  ) %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+## Pre-cursor Effector Model with unproductive cells
+
+This combines Hill and Reeves.
+
+\begin{align*}
+\frac{\mathrm{d}S}{\mathrm{d}t} &= a_S - d_SS - \beta SV\\
+\frac{\mathrm{d}I_{UP}}{\mathrm{d}t} &= (1-\tau)(1-\lambda)\beta SV - d_II_{UP} - kEI_{UP}\\
+\frac{\mathrm{d}I_{P}}{\mathrm{d}t} &= \tau(1-\lambda)\beta SV - d_II_{P} - kEI_{P} \\
+\frac{\mathrm{d}L}{\mathrm{d}t} &= \lambda\beta SV - th_LL\\
+\frac{\mathrm{d}P}{\mathrm{d}t} &= a_P + w(1-f)\frac{I}{I+N_P}P - d_PP\\
+\frac{\mathrm{d}E}{\mathrm{d}t} &= wf\frac{I}{I+N_P}P - d_EE\\
+\frac{\mathrm{d}V}{\mathrm{d}t} &= \pi I - gV - \beta SV\\
+I &= I_{P}+I_{UP}
+\end{align*}
+
+
+## Notes
+
+A key component of the immune models is the logistic growth term. There are several versions of immune growth rates represented above. Would be interested to know how these fundamentally differ by mechanistic interpretation.
+
+$$I\frac{E}{N_E+E}$$
+$$P\frac{V}{N_P+V}$$
+
+$$P\frac{I}{N_P+I}$$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
