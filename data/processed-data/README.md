@@ -20,5 +20,7 @@ See `analysis/data-processing/01_neut-vl-processing.html`
 
 ## 2. Analysis data
 
-These datasets are subset to the final analysis cohort: pre-ART, at least 2 VL measurements, have neutralization data. Generated via `analysis/data-processing/02_data-processing.html`. There is a viral load dataset `adata-vl.csv` and a pk dataset `adata-vl.csv`.
+These datasets are subset to the final analysis cohort: pre-ART, at least 2 VL measurements, have neutralization data. Generated via `analysis/data-processing/02_data-processing.html`. There is a viral load dataset `adata-vl.csv` and a pk dataset `adata-vl.csv`. 
 
+
+The `adata-vl.csv` removes 4 ptids with only 1 VL measurement prior to ART, while `adata-vl-stats.csv` keeps those participants. The reason to keep separate data is for simplicity of mlx downstream processing.

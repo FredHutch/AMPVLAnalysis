@@ -28,14 +28,16 @@ rx_lab = tibble(
 )
 
 time_lab = "Days post-first positive"
-
+#colors = c('gray','light green','forest green')
+colors = c('gray','steelblue','navy')
 
 
 ```
 
 ```{r load-data}
 
-vl_data = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+vl_data = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  mutate(protocol = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 081", "HVTN 704/HPTN 085"))
 
 art_surv_data = vl_data %>%
   group_by(pub_id) %>%
@@ -46,7 +48,7 @@ art_surv_data = vl_data %>%
   distinct(pub_id, rx_code2, protocol, any_art, art_day, fp_day, last_day, last_day_fp) %>%
   mutate(
     time_to_art = if_else(any_art, art_day - fp_day, last_day_fp),
-    time_to_art_check = if_else(any_art, art_day - fp_day, last_day -fp_day),
+    time_to_art_check = if_else(any_art, art_day - fp_day, last_day - fp_day),
     grp = factor(rx_code2, levels = rx_lab$rx_code2, labels= rx_lab$trt_cat)
     )
 
@@ -92,7 +94,7 @@ ggsurvplot(
   data = art_surv_data,
   legend.title = "",
   risk.table = T,
-  palette = c("black", "blue", "red"),
+  palette = colors,
   ylab = "Cumulative incidence",
   xlab = time_lab,
   fun = "event"
@@ -122,7 +124,7 @@ names(surv_703$strata) <- gsub("grp=", "", names(surv_703$strata))
 pl_703 = ggsurvplot(
   surv_703,  
   risk.table = T,
-  palette = c("black", "blue", "red"),
+  palette = colors,
   data = subset(art_surv_data, protocol == "HVTN 703"),
   legend.title = "",
   ylab = "Cumulative incidence",
@@ -149,7 +151,7 @@ pl_704 = ggsurvplot(
   surv_704,
   risk.table = T,
   data = subset(art_surv_data, protocol == "HVTN 704"),
-  palette = c("black", "blue", "red"),
+  palette = colors,
   legend.title = "",
   ylab = "Cumulative incidence",
   xlab = time_lab,

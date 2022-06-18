@@ -32,7 +32,9 @@ rx_lab = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
-save_shared_folder = F
+shared_drive = dir.exists("/Volumes/trials/")
+
+save_shared_folder = T
 if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
 
 ```
@@ -155,6 +157,7 @@ measurement_summary = vl_data_unblind %>%
     peak_vl = max(vl),
     peak_vl_no_art = max(vl[on_art == 0]),
     total_measurements = n(),
+    total_measurements_offart = length(vl[on_art == 0]),
     total_measurements_pos = length(vl[cens != 1]),
     total_pos_offart = length(vl[on_art == 0 & cens != 1]),
     total_pos_onart = n() - total_measurements_pos
@@ -313,9 +316,14 @@ To create the analysis dataset (and eventual PKPD dataset), the processing must:
   # remove . = NA, convert back to numeric
   mutate(across(everything(), ~na_if(., "."))) %>%
   mutate(across(c(AMT, DV, RATE), as.numeric)) %>%
-  mutate(dose_row = !is.na(AMT) & is.na(DV)) %>%
+  mutate(
+    dose_row = !is.na(AMT) & is.na(DV) #remove these
+    ) %>%
   group_by(ID) %>%
-  mutate(no_followup = all(dose_row)) %>% # 15 people drop out after first infusion
+  mutate(
+    no_followup = all(dose_row), # 15 people drop out after first infusion
+    final_dose_row = dose_row & TIME == max(TIME) # want to keep these rows, sort of like no-followup
+    ) %>% 
   # collapse dosing rows into long-format
   group_by(ID, DOSENO) %>%
   arrange(-dose_row, TIME) %>% # fixes time issues
@@ -327,8 +335,8 @@ To create the analysis dataset (and eventual PKPD dataset), the processing must:
   ungroup() %>%
   arrange(ID, TIME) %>%
   # remove dose rows, rename and remove variables
-  dplyr::filter(!dose_row | no_followup) %>%
-  dplyr::select(pub_id, everything(), -ID, -AMT, -AVISITN, -RATE, -dose_row) %>%
+  dplyr::filter(!dose_row | no_followup | final_dose_row) %>%
+  dplyr::select(pub_id, everything(), -ID, -AMT, -AVISITN, -RATE, -dose_row, -final_dose_row) %>%
   rename(days_enrollment = TIME, concentration = DV, infusion_no = DOSENO) %>%
   left_join(rx_dat, by = "pub_id") %>%
   left_join(dplyr::select(time_data, -has_neut_data, -infection_pre85wks), by = "pub_id") %>%
@@ -363,31 +371,220 @@ with(pk_data_stem, ftable(dose, rx_code2)) # can drop this variable
 
 ```
 
+## Time Summary
+
+The `time_data` dataset was created upstream. Here, we subset out based on has_neut_data & infection_pre85wks
+
+Then, we add some key variables:
+ - final infusion day (where?)
+ - final_vl_day is max(enrollment_day) based on the vl dataset, rename as final_day [x]
+ - from the cleaned vl data:
+   - regional cat [x]
+   - final negative day (before dx) [x]
+   - rx info, then create rx lab variable [x]
+
+
+```{r get-final-infusion-info, eval = F, include = F}
+
+time_data_test = left_join(time_data, rx_dat, by = "pub_id")
+mismatch_time_ptids = dplyr::filter(time_data_test, dx_day != fp_day)
+
+final_infusion_data = pk_data_stem %>%
+  group_by(pub_id, dx_day, fp_day) %>%
+  summarize(
+    total_infusions = max(infusion_no),
+    final_infusion_day = round(max(infusion_day)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    dx_post_infusion = dx_day - final_infusion_day,
+    fp_post_infusion = fp_day - final_infusion_day
+  )
+
+range(final_infusion_data$dx_post_infusion)
+range(final_infusion_data$fp_post_infusion)
+
+stopifnot(all(final_infusion_data$dx_post_infusion >= final_infusion_data$fp_post_infusion))
+stopifnot(all(final_infusion_data$fp_post_infusion >= 0))
+stopifnot(sum(final_infusion_data$dx_post_infusion != final_infusion_data$fp_post_infusion) == 
+            nrow(subset(mismatch_time_ptids, has_neut_data & infection_pre85wks & rx_code2 != "C")))
+      
+```
+
+
+```{r raw-infusion-data-check, eval = F, include = F}
+
+pubid.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
+pubid.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
+pubid = rbind(pubid.703, pubid.704)
+pubid = subset(pubid, select=c('ptid','pub_id'))
+
+idt.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/v703_infusion_dates.csv')
+idt.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/v704_infusion_dates.csv')
+idt = rbind(idt.703, idt.704)
+idt$ptid = as.integer(gsub('-','',idt$pt))
+idt$idt = as.Date(idt$idt, '%d/%m/%Y')
+
+fp = read.csv('/Volumes/trials/vaccine/p704/analysis/efficacy/adata/amp_diagnostic_trajectories.csv')
+fp$dxdt = lubridate::ymd(fp$dxdt)
+
+
+inf.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/time_between_infusions.csv') %>%
+  mutate(
+    ptid = as.integer(gsub('-','', ptid)),
+    infdt = lubridate::dmy(infusiondt)) %>%
+  left_join( pubid, by = "ptid") %>%
+  group_by(pub_id) %>%
+  summarize(final_infdt = max(infdt))
+
+idt_data = left_join(idt, pubid, by = "ptid") %>%
+  left_join(distinct(fp, pub_id, dxdt), by = "pub_id") %>%
+  group_by(pub_id) %>%
+  mutate(
+    enrdt = min(idt),
+    days = as.numeric(difftime(idt, enrdt, units = "days")),
+    days_dx = as.numeric(difftime(idt, dxdt, units = "days"))
+  ) %>%
+  ungroup()
+any(is.na(idt_data$pub_id))
+
+idt_infected = idt_data %>%
+  filter(!is.na(days_dx) & days_dx < 0) %>%
+  group_by(pub_id) %>%
+  mutate(
+    final_idt = max(idt),
+    final_infusion_day = as.numeric(difftime(final_idt, enrdt, units = "days"))
+)%>%
+  ungroup()
+
+# check enrollment
+test_enrollment_date = idt_data %>%
+  distinct(pub_id, enrdt) %>%
+  right_join(select(time_data, pub_id, check_enrdt = enrdt), by = "pub_id") %>%
+  mutate(check_enrdt = as.Date(check_enrdt, '%m/%d/%Y'))
+
+any(is.na(test_enrollment_date$check_enrdt))
+any(is.na(test_enrollment_date$enrdt))
+all(test_enrollment_date$check_enrdt == test_enrollment_date$enrdt)
+
+# check final infusion
+raw_pk = read_csv(clean_data_here("pk-nm-data.csv"))
+
+
+check_id = "703-1945"
+dplyr::filter(idt_infected, pub_id == check_id)
+dplyr::filter(inf.703, pub_id == check_id)
+dplyr::filter(raw_pk, pub_id == check_id & DV == ".")
+dplyr::filter(pk_data_stem, pub_id == check_id) %>% distinct(pub_id, infusion_day)
+
+dplyr::filter(vl_data_all, pub_id == check_id & days_fp >= 0) %>% select(pub_id, days_enrollment, vl, dx_day)
+
+test_infusion_day = idt_infected %>%
+  distinct(pub_id, final_infusion_day) %>%
+  right_join(distinct(final_infusion_data, pub_id, check_final_day = final_infusion_day), by = "pub_id")
+any(is.na(test_infusion_day$final_infusion_day))
+any(is.na(test_infusion_day$check_final_day))
+all(test_infusion_day$final_infusion_day == test_infusion_day$check_final_day)
+
+mismatch_final = subset(test_infusion_day, final_infusion_day != check_final_day)
+
+subset(vl_data_unblind, pub_id %in% mismatch_final$pub_id ) %>% distinct(pub_id, infection_pre85wks, has_neut_data, dxdt, dx_day, fp_day)
+
+```
+
+
+```{r vl-time-summary}
+
+# lose two cases, the two without viral loads
+vl_time_summary = vl_data_unblind %>%
+  dplyr::filter(days_fp < 0) %>%
+  group_by(pub_id, study_region_cat, dx_day, fp_day, rx_code2) %>%
+  summarize(
+    last_neg_day = max(days_enrollment),
+    .groups = "drop"
+  )
+
+# the two without fp data, no viral loads
+stopifnot(!unique(subset(vl_data_unblind, is.na(fp_day))$pub_id) %in% vl_time_summary$pub_id)
+  
+range(vl_time_summary$last_neg_day)
+stopifnot(all(vl_time_summary$dx_day > vl_time_summary$last_neg_day))
+stopifnot(all(vl_time_summary$fp_day > vl_time_summary$last_neg_day))
+
+```
+
+```{r create-time-summary}
+
+time_summary_full = time_data %>%
+  rename(final_day = final_vl_day) %>%
+  left_join(dplyr::select(vl_time_summary, -dx_day, -fp_day), by = "pub_id") 
+
+```
+
 ## Create final analysis datasets
 
 ```{r}
 
 neut_merge = dplyr::select(neut_data, -contains("cat")) 
 
-# this covariate definition provided by Peter, used in NEJM model
-vl_data_analysis = vl_data_unblind %>%
-  dplyr::filter(!pub_id %in% low_sample_ptids & on_art == 0 & has_neut_data & infection_pre85wks) %>%
+vl_data_analysis_full = vl_data_unblind %>%
+  dplyr::filter(on_art == 0 & has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
   mutate(log10vl = log10(vl), rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))  
+
+n_distinct(vl_data_analysis_full$pub_id)
+stopifnot(n_distinct(vl_data_analysis_full$pub_id) == 162)
+
+vl_data_analysis = vl_data_analysis_full %>%
+  dplyr::filter(!pub_id %in% low_sample_ptids)
 
 n_distinct(vl_data_analysis$pub_id)
 stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
 
-pk_data_analysis = pk_data_stem %>% dplyr::filter(!pub_id %in% low_sample_ptids & has_neut_data & infection_pre85wks) %>%
+pk_data_analysis = pk_data_stem %>% 
+  dplyr::filter(!pub_id %in% low_sample_ptids & has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
   mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
 
 n_distinct(pk_data_analysis$pub_id)
 stopifnot(n_distinct(pk_data_analysis$pub_id) == 96)
 
-write_csv(measurement_summary, clean_data_here("ptid-measurement-counts.csv"))
-write_csv(dplyr::select(vl_data_analysis, -flag), clean_data_here("adata-vl.csv"))
-write_csv(dplyr::select(pk_data_analysis, -dose), clean_data_here("adata-pk.csv"))
+time_analysis = time_summary_full %>%
+  dplyr::filter(has_neut_data & infection_pre85wks) %>%
+  left_join(neut_merge, by = "pub_id") %>%
+  mutate(
+    rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat),
+    vl_model_flag = !pub_id %in% low_sample_ptids
+    )
+
+n_distinct(time_analysis$pub_id)
+stopifnot(n_distinct(time_analysis$pub_id) == 162)
+stopifnot(n_distinct(subset(time_analysis, vl_model_flag)$pub_id) == 158)
+
+```
+
+
+```{r save-final-datasets}
+
+measurement_summary %>%
+  glimpse() %>%
+  write_csv(clean_data_here("ptid-measurement-counts.csv"))
+
+dplyr::select(vl_data_analysis_full, -flag) %>%
+  glimpse() %>%
+  write_csv(clean_data_here("adata-vl-stats.csv"))
+
+dplyr::select(vl_data_analysis, -flag) %>%
+  glimpse() %>%
+  write_csv(clean_data_here("adata-vl.csv"))
+
+dplyr::select(pk_data_analysis, -dose) %>%
+  glimpse() %>%
+  write_csv(clean_data_here("adata-pk.csv"))
+
+time_analysis %>%
+  glimpse() %>%
+  write_csv(clean_data_here("adata-time-summary.csv"))
 
 ```
 
@@ -398,6 +595,10 @@ write_csv(dplyr::select(pk_data_analysis, -dose), clean_data_here("adata-pk.csv"
 write_csv(dplyr::select(vl_data_analysis, -flag, -has_neut_data, -infection_pre85wks, -rx),
                          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-viral-loads.csv")
 
-
 write_csv(dplyr::select(pk_data_analysis, -dose, -has_neut_data, -infection_pre85wks, -rx),
                          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-pk.csv")
+
+write_csv(dplyr::select(time_analysis, -has_neut_data, -infection_pre85wks),
+                         "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-time-summary.csv")
+
+```

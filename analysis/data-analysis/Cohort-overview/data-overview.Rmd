@@ -49,24 +49,26 @@ rx_lab = tibble(
 ```{r load-data}
 
 measurement_summary = read_csv(clean_data_here("ptid-measurement-counts.csv"), col_types = cols())
-vl_data_all = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
-vl_data_final = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 
 rx_map = rx_dat %>% select(pub_id, rx_code2) %>%
   mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat),
          .keep = "unused")
 
-study_region_map = distinct(vl_data_final, study_region_code, study_region_cat)
+study_region_map = distinct(vl_data, study_region_code, study_region_cat) %>%
+  mutate(study_region_cat2 = if_else(str_detect(study_region_cat, "703"), 
+                                     paste0(study_region_cat, "/081"),
+                                     paste0(study_region_cat, "/085")))
 
-demo_vars = distinct(vl_data_all, pub_id, study_region_code, any_art, protocol) %>%
+demo_vars = distinct(vl_data, pub_id, study_region_code, any_art, protocol) %>%
   left_join(rx_map, by = "pub_id") %>%
   mutate(study_region_cat = factor(study_region_code, 
                                    levels = study_region_map$study_region_code,
-                                   labels = study_region_map$study_region_cat),
+                                   labels = study_region_map$study_region_cat2),
          any_art = factor(any_art, levels = c(F, T), labels = c("No", "Yes")))
 
-neut_vars = distinct(vl_data_final, pub_id, nisolates, gmt80ls) %>%
+neut_vars = distinct(vl_data, pub_id, nisolates, gmt80ls) %>%
   mutate(ic80gte1 = gmt80ls>=1)
 
 ```
@@ -94,10 +96,10 @@ PG: I would think this table would include information on available VL data pre 
 ```{r prep-table1}
 
 table1_prep = measurement_summary %>%
-  dplyr::filter(key %in% c("total_measurements", "total_pos_offart")) %>%
+  dplyr::filter(key %in% c("total_measurements", "total_measurements_offart")) %>%
   dplyr::select(pub_id, key, total) %>%
   pivot_wider(names_from = "key", values_from = "total") %>%
-  dplyr::mutate(across(c(total_pos_offart, total_measurements), 
+  dplyr::mutate(across(c(total_measurements_offart, total_measurements), 
                        ~fct_relevel(factor(if_else(. < 5, as.character(.), "> 4")),
                                     "> 4", after = Inf))
   ) %>%
@@ -114,10 +116,10 @@ label(table1_prep$ic80gte1) = "IC80 (least sensitive)"
 label(table1_prep$nisolates) = "Total isolates"
 label(table1_prep$any_art) = "ART use"
 label(table1_prep$total_measurements) = "Total VL measurements <br>(post-first positive)"
-label(table1_prep$total_pos_offart) = "Total positive VL<br>(pre-ART)"
+label(table1_prep$total_measurements_offart) = "Total VL measurements<br>(pre-ART)"
 
 
-var_formula = "~ study_region_cat + any_art + ic80gte1 + nisolates + total_measurements + total_pos_offart"
+var_formula = "~ study_region_cat + any_art + ic80gte1 + nisolates + total_measurements + total_measurements_offart"
 
 ```
 
@@ -134,7 +136,7 @@ table1(as.formula(paste(var_formula, "| rx_lab")),
 
 ```{r table1-bygroup}
 
- table1(as.formula(paste(var_formula, "| rx_lab*protocol")),
+table1(as.formula(paste(var_formula, "| rx_lab*protocol")),
         data=table1_prep, 
         caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group and Protocol.")
 
@@ -166,7 +168,7 @@ dx_visit_schedule %>%
 
 ```{r pre-dx-fp}
 
-fp_pre_dx = vl_data_all %>%
+fp_pre_dx = vl_data %>%
   dplyr::filter(days_dx < 0 & days_fp >= 0 & has_neut_data) %>%
   mutate(visitno_tmp = "Pre-Diagnosis")
 
@@ -186,7 +188,7 @@ There are some visitno labeled for dx-day, but should probably actually be label
 
 ```{r dx-data}
 
-dx_dat = vl_data_all %>%
+dx_dat = vl_data %>%
   dplyr::filter(has_neut_data & floor(visitno) == floor(dxvisit) & days_dx >= 0) %>%
    mutate(
      visitno_tmp_x = round(visitno - floor(dxvisit), 1),
@@ -195,7 +197,7 @@ dx_dat = vl_data_all %>%
      )
 
 dx_visits_afterd22 = subset(dx_dat, days_dx>22) 
-tmp = subset(vl_data_all, pub_id %in% dx_visits_afterd22$pub_id & days_dx > 0)
+tmp = subset(vl_data, pub_id %in% dx_visits_afterd22$pub_id & days_dx > 0)
 check_dx = ggplot(tmp, aes(x = visitno, y = days_dx)) + geom_point() + geom_line()+ facet_wrap(~pub_id)
 
 dx_dat %>%
@@ -228,7 +230,7 @@ dx_dat_summary
 
 ```{r post-dx-data}
 
-post_dx_dat = vl_data_all %>%
+post_dx_dat = vl_data %>%
   dplyr::filter(days_dx >= 0 & visitno >= 31 & visitno < 40 & has_neut_data) %>%
   mutate(visitno_tmp = as.character(floor(visitno)))
 
@@ -261,14 +263,12 @@ fp_pre_dx_summary %>%
 
 cuts = c(-125, 0, 1, 22, 38, 52, 70, 140, 197, 400) 
 
-vl_data_dx_cut = vl_data_all %>%
+vl_data_dx_cut = vl_data %>%
   dplyr::filter(has_neut_data) %>%
   mutate(
     days_dx_cut = cut(days_dx, breaks = cuts, include.lowest = T, right = F)
   ) %>%
   dplyr::filter(days_fp >= 0 | days_dx >= 0 & days_dx <= 196) %>%
-  left_join(neut_vars, by = "pub_id") %>%
-  left_join(dplyr::select(demo_vars, pub_id, rx_lab), by = "pub_id") %>%
   mutate(
     ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
                       labels = c("IC80 < 1 mcg/mL", bquote("IC80 >= 1 mcg/mL"))),
@@ -333,7 +333,7 @@ post_dx_dat %>%
 
 ```{r check-country}
 
-vl_data_all %>%
+vl_data %>%
   dplyr::filter(has_neut_data) %>%
   unite(protocol_country, protocol, country) %>%
   distinct(pub_id, study_region_cat, protocol_country) %>%
