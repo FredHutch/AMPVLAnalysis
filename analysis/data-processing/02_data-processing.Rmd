@@ -9,6 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(janitor)
+library(lubridate)
 library(tidyverse)
 library(here)
 library(glue)
@@ -50,6 +51,7 @@ neut_data = read_csv(clean_data_here("amp-neut-blinded.csv"), col_types = cols()
 vl_data_all = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
 time_data = read_csv(clean_data_here("ptid-time-data.csv"), col_types = cols())
 pk_data_nm = read_csv(clean_data_here("pk-nm-data.csv"), col_types = cols())
+raw_dose_data = read_csv(raw_data_here("pk-dosing-info.csv"))
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 infected_ids = rx_dat %>% dplyr::filter(pub_id %in% neut_data$pub_id) %>% pull(pub_id)
 
@@ -272,11 +274,57 @@ neut_data %>%
 
 ```
 
-### PK Data
+## PK Data
 
-This data has been carefully processed by the hvtn. It is case-control data (1:1), so there will be uninfected but treated participants in these data. 
+### Dose data
 
-As expected, there are data for the 98 ptids with available neutralization data matching the 98 treated ptids in the VL data
+This contains all infusion dates, rates, and doses. Merge on the diagnosis time, add a time variable and subset to analysis cohort.
+
+There are many participants who received an infusion on their diagnosis date (51). There are 9 rows post-fp but pre-dx.
+
+```{r dosing-data}
+
+dose_data = raw_dose_data %>%
+  dplyr::filter(pub_id %in% neut_data$pub_id) %>%
+  left_join(select(time_data, pub_id, enrdt, dxdt, fpdt), by = "pub_id") %>%
+  mutate(infusiondt = as.character(format(infusiondt, "%m-%d-%Y"))) %>%
+  group_by(pub_id) %>%
+  mutate(
+    days_enrollment = diffdays(infusiondt, enrdt),
+    days_fp =  diffdays(infusiondt, fpdt),
+    days_dx =  diffdays(infusiondt, dxdt),
+    post_dx = days_dx >= 0,
+    post_fp = days_fp >= 0,
+    final_infusiondt = format(max(mdy(infusiondt)), "%m-%d-%Y"),
+    final_infusiondt_pre_dx = format(max(mdy(infusiondt[!post_dx])), "%m-%d-%Y"),
+    final_infusiondt_pre_fp = format(max(mdy(infusiondt[!post_fp])), "%m-%d-%Y"),
+    final_infusion_pre_dx = infusiondt == as.character(final_infusiondt_pre_dx),
+    final_infusion_pre_fp = infusiondt == as.character(final_infusiondt_pre_fp)
+  ) %>%
+  ungroup()
+
+stopifnot(n_distinct(dose_data$pub_id) == 98)
+sum(dose_data$days_dx == 0)
+sum(dose_data$days_dx > 0)
+n_distinct(subset(dose_data, days_dx >= 0)$pub_id)
+
+sum(dose_data$days_fp == 0)
+sum(dose_data$days_fp > 0)
+n_distinct(subset(dose_data, days_fp >= 0)$pub_id)
+
+stopifnot(nrow(subset(dose_data, final_infusion_pre_dx)) == 98)
+stopifnot(n_distinct(subset(dose_data, final_infusion_pre_dx)$pub_id) == 98)
+
+stopifnot(nrow(subset(dose_data, final_infusion_pre_fp)) == 98)
+stopifnot(n_distinct(subset(dose_data, final_infusion_pre_fp)$pub_id) == 98)
+
+```
+
+### Concentration data
+
+This data has been carefully processed by the hvtn. It is case-control data (1:1), so there will be uninfected but treated participants in these data. However, there are exclusionary rules for the case-control data that are out of sync with the actual infusion schedule of the participants through acquisition.
+
+As expected, there are data for the 98 ptids with available neutralization data matching the 98 treated ptids in the VL data.
 
 ```{r nm-pk-overview}
 
@@ -376,121 +424,63 @@ with(pk_data_stem, ftable(dose, rx_code2)) # can drop this variable
 The `time_data` dataset was created upstream. Here, we subset out based on has_neut_data & infection_pre85wks
 
 Then, we add some key variables:
- - final infusion day (where?)
+ - final infusion day from clean dose data (above)
  - final_vl_day is max(enrollment_day) based on the vl dataset, rename as final_day [x]
  - from the cleaned vl data:
    - regional cat [x]
    - final negative day (before dx) [x]
    - rx info, then create rx lab variable [x]
 
+There are 11 cases of mismatch with the PK data, where the final pre-dx infusion is later.
+9/11 of those cases correspond to first positive exclusionary criteria (fp  before dx retrospective). 
+The other two cases, not sure, maybe a big delay for dx.
 
-```{r get-final-infusion-info, eval = F, include = F}
+```{r get-final-infusion-info}
 
 time_data_test = left_join(time_data, rx_dat, by = "pub_id")
 mismatch_time_ptids = dplyr::filter(time_data_test, dx_day != fp_day)
 
-final_infusion_data = pk_data_stem %>%
-  group_by(pub_id, dx_day, fp_day) %>%
+final_infusion_data = dose_data %>%
+  group_by(pub_id) %>%
   summarize(
+    final_infusion_day = days_enrollment[which.max(infusion_no)],
+    final_infusion_pre_dx_day = days_enrollment[final_infusion_pre_dx],
+    final_infusion_pre_fp_day = days_enrollment[final_infusion_pre_fp],
     total_infusions = max(infusion_no),
-    final_infusion_day = round(max(infusion_day)),
+    total_infusions_pre_dx = max(infusion_no[!post_dx]),
+    total_infusions_pre_fp = max(infusion_no[!post_fp]),
     .groups = "drop"
-  ) %>%
-  mutate(
-    dx_post_infusion = dx_day - final_infusion_day,
-    fp_post_infusion = fp_day - final_infusion_day
-  )
+  ) 
 
-range(final_infusion_data$dx_post_infusion)
-range(final_infusion_data$fp_post_infusion)
 
-stopifnot(all(final_infusion_data$dx_post_infusion >= final_infusion_data$fp_post_infusion))
-stopifnot(all(final_infusion_data$fp_post_infusion >= 0))
-stopifnot(sum(final_infusion_data$dx_post_infusion != final_infusion_data$fp_post_infusion) == 
-            nrow(subset(mismatch_time_ptids, has_neut_data & infection_pre85wks & rx_code2 != "C")))
+stopifnot(nrow(final_infusion_data)== 98)
+stopifnot(n_distinct(final_infusion_data$pub_id)== 98)
+
+stopifnot(all(final_infusion_data$final_infusion_day >= final_infusion_data$final_infusion_pre_dx_day))
+stopifnot(all(final_infusion_data$final_infusion_pre_dx_day >= final_infusion_data$final_infusion_pre_fp_day))
+
+stopifnot(all(final_infusion_data$total_infusions >= final_infusion_data$total_infusions_pre_dx))
+stopifnot(all(final_infusion_data$total_infusions_pre_dx >= final_infusion_data$total_infusions_pre_fp))
+stopifnot(all(final_infusion_data$total_infusions_pre_fp >= 1))
+
+pk_data_final_infusions = pk_data_stem %>%
+  group_by(pub_id) %>%
+  summarize(
+    final_infusion_day = round(max(days_enrollment)),
+    total_infusions = max(infusion_no),
+    .groups = "drop"
+  ) 
+
+final_infusion_data %>%
+  dplyr::select(pub_id, final_infusion_pre_dx_day, total_infusions_pre_dx, final_infusion_pre_fp_day) %>%
+  full_join(pk_data_final_infusions, by = "pub_id") %>%
+  dplyr::filter(total_infusions_pre_dx != total_infusions)
+
+final_infusion_data %>%
+  dplyr::filter(pub_id %in% c("704-2624", "704-2901"))
       
 ```
 
-
-```{r raw-infusion-data-check, eval = F, include = F}
-
-pubid.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
-pubid.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
-pubid = rbind(pubid.703, pubid.704)
-pubid = subset(pubid, select=c('ptid','pub_id'))
-
-idt.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/v703_infusion_dates.csv')
-idt.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/v704_infusion_dates.csv')
-idt = rbind(idt.703, idt.704)
-idt$ptid = as.integer(gsub('-','',idt$pt))
-idt$idt = as.Date(idt$idt, '%d/%m/%Y')
-
-fp = read.csv('/Volumes/trials/vaccine/p704/analysis/efficacy/adata/amp_diagnostic_trajectories.csv')
-fp$dxdt = lubridate::ymd(fp$dxdt)
-
-
-inf.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/time_between_infusions.csv') %>%
-  mutate(
-    ptid = as.integer(gsub('-','', ptid)),
-    infdt = lubridate::dmy(infusiondt)) %>%
-  left_join( pubid, by = "ptid") %>%
-  group_by(pub_id) %>%
-  summarize(final_infdt = max(infdt))
-
-idt_data = left_join(idt, pubid, by = "ptid") %>%
-  left_join(distinct(fp, pub_id, dxdt), by = "pub_id") %>%
-  group_by(pub_id) %>%
-  mutate(
-    enrdt = min(idt),
-    days = as.numeric(difftime(idt, enrdt, units = "days")),
-    days_dx = as.numeric(difftime(idt, dxdt, units = "days"))
-  ) %>%
-  ungroup()
-any(is.na(idt_data$pub_id))
-
-idt_infected = idt_data %>%
-  filter(!is.na(days_dx) & days_dx < 0) %>%
-  group_by(pub_id) %>%
-  mutate(
-    final_idt = max(idt),
-    final_infusion_day = as.numeric(difftime(final_idt, enrdt, units = "days"))
-)%>%
-  ungroup()
-
-# check enrollment
-test_enrollment_date = idt_data %>%
-  distinct(pub_id, enrdt) %>%
-  right_join(select(time_data, pub_id, check_enrdt = enrdt), by = "pub_id") %>%
-  mutate(check_enrdt = as.Date(check_enrdt, '%m/%d/%Y'))
-
-any(is.na(test_enrollment_date$check_enrdt))
-any(is.na(test_enrollment_date$enrdt))
-all(test_enrollment_date$check_enrdt == test_enrollment_date$enrdt)
-
-# check final infusion
-raw_pk = read_csv(clean_data_here("pk-nm-data.csv"))
-
-
-check_id = "703-1945"
-dplyr::filter(idt_infected, pub_id == check_id)
-dplyr::filter(inf.703, pub_id == check_id)
-dplyr::filter(raw_pk, pub_id == check_id & DV == ".")
-dplyr::filter(pk_data_stem, pub_id == check_id) %>% distinct(pub_id, infusion_day)
-
-dplyr::filter(vl_data_all, pub_id == check_id & days_fp >= 0) %>% select(pub_id, days_enrollment, vl, dx_day)
-
-test_infusion_day = idt_infected %>%
-  distinct(pub_id, final_infusion_day) %>%
-  right_join(distinct(final_infusion_data, pub_id, check_final_day = final_infusion_day), by = "pub_id")
-any(is.na(test_infusion_day$final_infusion_day))
-any(is.na(test_infusion_day$check_final_day))
-all(test_infusion_day$final_infusion_day == test_infusion_day$check_final_day)
-
-mismatch_final = subset(test_infusion_day, final_infusion_day != check_final_day)
-
-subset(vl_data_unblind, pub_id %in% mismatch_final$pub_id ) %>% distinct(pub_id, infection_pre85wks, has_neut_data, dxdt, dx_day, fp_day)
-
-```
 
 
 ```{r vl-time-summary}
@@ -517,7 +507,8 @@ stopifnot(all(vl_time_summary$fp_day > vl_time_summary$last_neg_day))
 
 time_summary_full = time_data %>%
   rename(final_day = final_vl_day) %>%
-  left_join(dplyr::select(vl_time_summary, -dx_day, -fp_day), by = "pub_id") 
+  left_join(dplyr::select(vl_time_summary, -dx_day, -fp_day), by = "pub_id") %>%
+  left_join(select(final_infusion_data, -contains("total_")), by = "pub_id")
 
 ```
 
@@ -559,6 +550,8 @@ time_analysis = time_summary_full %>%
 
 n_distinct(time_analysis$pub_id)
 stopifnot(n_distinct(time_analysis$pub_id) == 162)
+stopifnot(sum(is.na(time_analysis$final_infusion_day)) == 162 - 98)
+
 stopifnot(n_distinct(subset(time_analysis, vl_model_flag)$pub_id) == 158)
 
 ```
@@ -578,6 +571,10 @@ dplyr::select(vl_data_analysis, -flag) %>%
   glimpse() %>%
   write_csv(clean_data_here("adata-vl.csv"))
 
+dose_data %>%
+  glimpse() %>%
+  write_csv(clean_data_here("dosing-data.csv"))
+
 dplyr::select(pk_data_analysis, -dose) %>%
   glimpse() %>%
   write_csv(clean_data_here("adata-pk.csv"))
@@ -590,7 +587,6 @@ time_analysis %>%
 
 
 ```{r save-shared, eval = save_shared_folder}
-
 
 write_csv(dplyr::select(vl_data_analysis, -flag, -has_neut_data, -infection_pre85wks, -rx),
                          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-viral-loads.csv")
