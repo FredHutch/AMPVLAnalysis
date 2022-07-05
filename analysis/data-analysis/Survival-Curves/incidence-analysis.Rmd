@@ -1,0 +1,242 @@
+---
+title: "Survival Analysis for Various Time-based Outcomes"
+output: 
+  html_document:
+    keep_md: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F}
+knitr::opts_chunk$set(echo = F)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(cowplot)
+library(survival)
+library(survminer)
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
+
+source(here("R", "directory-funs.R"))
+
+rx_lab = tibble(
+  levels = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+time_lab_inf = "Weeks post final pre-RNA+ infusion"
+time_lab_fp = "Weeks post first RNA+"
+#colors = c('gray','light green','forest green')
+colors = c('gray40','steelblue','navy')
+
+ytitle_fp = "Cumulative fraction first RNA+"
+ytitle_art = "Cumulative fraction ART initiation"
+
+
+```
+
+```{r load-data}
+
+time_summary_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  mutate(
+    protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 081", "HVTN 704/HPTN 085")
+    )
+
+
+```
+
+## ART Incidence Curves
+
+```{r}
+
+art_surv_data = time_summary_data %>%
+  dplyr::filter() %>%
+  mutate(
+    any_art = !is.na(artstartdt),
+    time_to_art = if_else(any_art, art_day - fp_day, final_day - fp_day)/7,
+    grp = rx_lab
+    )
+
+stopifnot(all(art_surv_data$time_to_art > 0))
+stopifnot(all(!is.na(art_surv_data$any_art)))
+
+```
+
+```{r sample-sizes}
+
+art_surv_data %>%
+  group_by(protocol_full, grp) %>%
+  summarize(N = n_distinct(pub_id), .groups = "drop") %>%
+  pivot_wider(values_from = N, names_from = grp) %>%
+  janitor::adorn_totals() %>%
+  kable() %>%
+  kable_styling(full_width = F)
+```
+
+```{r sample-size-endpoints}
+
+art_surv_data %>%
+  group_by(protocol_full, any_art, grp) %>%
+  summarize(N = n_distinct(pub_id), `.groups` = "drop") %>%
+  pivot_wider(values_from = N, names_from = grp) %>%
+  janitor::adorn_totals() %>%
+  kable() %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r pooled, fig.height=7}
+
+surv_pool = survfit(Surv(time_to_art, any_art) ~ grp, data = art_surv_data)
+names(surv_pool$strata) <- gsub("grp=", "", names(surv_pool$strata)) 
+# pairwise_survdiff(Surv(time_to_art, any_art) ~ rx_code2, data = art_surv_data) 
+# loc_lr_pvalues = as_tibble(round(ada_surv_loc_test[["p.value"]], 2), rownames = " ") %>%
+#   replace_na(list(`Left Arm` = " "))
+
+ggsurvplot(
+  surv_pool,
+  data = art_surv_data,
+  legend.title = "",
+  risk.table = T,
+  palette = colors,
+  ylab = ytitle_art,
+  xlab = time_lab_fp,
+  fun = "event"
+) 
+
+
+# ci_fit <- 
+#   cmprsk::cuminc(
+#     ftime = art_surv_data$time_to_art, 
+#     fstatus = art_surv_data$any_art, 
+#     group = as.numeric(art_surv_data$grp),
+#     cencode = 0
+#     )
+# ggcompetingrisks(ci_fit, xlab = "Days", multiple_panels = FALSE)
+
+```
+
+```{r amp703, fig.height=7}
+
+surv_703 = survfit(Surv(time_to_art, any_art) ~ grp, 
+                   data = subset(art_surv_data, protocol == "HVTN 703"))
+names(surv_703$strata) <- gsub("grp=", "", names(surv_703$strata)) 
+
+pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, data = subset(art_surv_data, protocol == "HVTN 703"))
+
+pl_703 = ggsurvplot(
+  surv_703,  
+  risk.table = T,
+  palette = colors,
+  data = subset(art_surv_data, protocol == "HVTN 703"),
+  legend.title = "",
+  ylab = ytitle_art,
+  xlab = time_lab_fp,
+  fun = "event",
+  ylim = c(0, 1)
+) +
+  ggtitle("HVTN703")
+
+pl_703
+
+```
+
+```{r amp704, fig.height=7}
+
+surv_704 = survfit(Surv(time_to_art, any_art) ~ grp, 
+                   data = subset(art_surv_data, protocol == "HVTN 704"))
+names(surv_704$strata) <- gsub("grp=", "", names(surv_704$strata)) 
+
+pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, data = subset(art_surv_data, protocol == "HVTN 704"), p.adjust.method = "none")
+
+pl_704 = ggsurvplot(
+  surv_704,
+  risk.table = T,
+  data = subset(art_surv_data, protocol == "HVTN 704"),
+  palette = colors,
+  legend.title = "",
+  ylab = ytitle_art,
+  xlab = time_lab_fp,
+  fun = "event",
+  ylim = c(0, 1)
+) +
+  ggtitle("HVTN704")
+
+pl_704
+```
+
+```{r inc-both}
+
+plot_grid(nrow = 2, rel_heights = c(12,2),
+          plot_grid(pl_703$plot + theme(legend.position = "none"), 
+                    pl_704$plot + theme(legend.position = "none")),
+          get_legend(pl_703$plot)
+)
+
+```
+
+
+
+```{r, eval = F}
+
+ada_surv_summary_loc = ada_surv %>%
+  group_by(loc = infusion_location_1) %>% summarize(mean_pct = round_away_0(100*mean(event == 1)))
+
+ada_surv_fit_loc = survfit(Surv(ada_study_day, event) ~ infusion_location_1, data = ada_surv) 
+ada_surv_loc_test = pairwise_survdiff(Surv(ada_study_day, event) ~ infusion_location_1, data = ada_surv, p.adjust.method = "none") 
+
+
+names(ada_surv_fit_loc$strata) <- gsub("infusion_location_1=", "", names(ada_surv_fit_loc$strata)) 
+loc_lr_pvalues = as_tibble(round(ada_surv_loc_test[["p.value"]], 2), rownames = " ") %>%
+  replace_na(list(`Left Arm` = " "))
+
+loc_surv_pl = ggsurvplot(ada_surv_fit_loc, data = ada_surv, risk.table = T, legend.title = "", 
+                         xlab = "Visit day post administration")
+loc_surv_pl$plot = loc_surv_pl$plot +
+  ggpp::annotate("table", x = 0, y = 0.2, label = list(loc_lr_pvalues), vjust = 1, hjust = 0) +
+  ggplot2::annotate("text", x = 0, y = 0.21, label = "Log-rank p-value", vjust = 0, hjust = 0)
+
+loc_surv_pl
+
+```
+
+## Last negative (visit) to first positive
+
+
+
+## Last infusion (pre positive RNA) to first positive
+
+Among VRC01 recipients only
+
+```{r}
+
+subset(time_summary_data, is.na(final_infusion_day))
+
+stopifnot(all(!is.na(time_summary_data$fp_day) & time_summary_data$fp_day < Inf))
+stopifnot(all(!is.na(time_summary_data$final_infusion_pre_fp_day) & time_summary_data$final_infusion_pre_fp_day < Inf))
+
+
+art_surv_data = time_summary_data %>%
+  dplyr::filter() %>%
+  mutate(
+    any_art = !is.na(artstartdt),
+    time_to_art = if_else(any_art, art_day - fp_day, final_day - fp_day),
+    grp = rx_lab
+    )
+
+
+```
+
+```{r}
+
+
+
+stopifnot(all(art_surv_data$time_to_art > 0))
+stopifnot(all(!is.na(art_surv_data$any_art)))
+
+```
+

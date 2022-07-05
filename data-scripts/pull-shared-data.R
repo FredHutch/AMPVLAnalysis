@@ -42,8 +42,7 @@ pk_data_nm %>%
   write_csv(clean_data_here("pk-nm-data.csv")) %>%
   write_csv(mlx_data_here("pk-nm-data.csv"))
 
-# --------- infusion date data ---------
-
+# --------- infusion date data - VRC01 ---------
 
 dose703 = read_sas("/Volumes/trials/vaccine/p703/analysis/NONMEM/case_control/data/analysis/adex.sas7bdat")%>%
   mutate(SUBJID = as.integer(SUBJID))
@@ -89,3 +88,29 @@ with(subset(dose_check, !is.na(TIME.x)), all(round(TIME.x) == round(TIME.y)))
 dose_data %>%
   dplyr::select(pub_id, infusion_no = ASEQ, infusiondt, dose_mg = AEXDOSE, infusion_durn_days, RATE, TVLDL, IVREST) %>%
   write_csv(raw_data_here("pk-dosing-info.csv"))
+
+
+# --------- placebos date data - VRC01 ---------
+
+placebo_id = subset(rx_dat, rx_code2 == "C")$pub_id
+
+idt.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/v703_infusion_dates.csv')
+idt.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/v704_infusion_dates.csv')
+bind_rows(idt.703, idt.704) %>% 
+  mutate(
+    ptid = as.integer(gsub('-','', ptid))
+  ) %>%
+  left_join(pubid, by = "ptid") %>%
+  filter(pub_id %in% placebo_id) %>%
+  mutate(
+    infusiondt = as.Date(dmy(idt))
+  ) %>%
+  group_by(pub_id) %>%
+  mutate(
+    infusion_no = as.numeric(factor(visit))
+  ) %>%
+  dplyr::select(pub_id, infusion_no, infusiondt) %>%
+  write_csv(raw_data_here("placebo-dosing-all.csv"))
+
+
+

@@ -72,7 +72,8 @@ There are four pieces to this processing:
     - restrict to filtered
     - merge on additional relevant data (time/demo)
     - create time variables
-4) final datasets - merge on the neut to PK and VL data, save
+4) Time summary data
+5) final datasets - merge on the neut to PK and VL data, save
 
 
 The goal of this script is to QC the cleaned version of those datasets to determine the final analysis data with the final cohort of participants. Specific
