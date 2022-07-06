@@ -27,7 +27,7 @@ find_firstpositive = function(censor_flag, dates){
   # a character in this format is consistent with other date variables in the raw data
   as.character(format(min(mdy(pos_dates)), '%m-%d-%Y'))
 }
-
+check_dan_data = F
 save_data = T
 
 ```
@@ -46,8 +46,6 @@ v704_vl = read_csv(raw_data_here("AMP Data for Modeling files/v704_viral_loads_b
 raw_vl_data = bind_rows(v703_vl, v704_vl)
 
 rx_dat = read_csv(raw_data_here('rx_dat.csv'))
-
-dans_data = read_csv(raw_data_here("DR-amp-vl-blinded.csv"))
 
 ```
 
@@ -275,7 +273,10 @@ fp_first_analysis %>%
 
 Censored on diagnosis day. The ptid with neut data is actually one of the case above.
 
-```{r data-dx-cens}
+```{r data-dx-cens, eval = check_dan_data}
+dans_data = read_csv(raw_data_here("DR-amp-vl-blinded.csv"))
+
+
 # checking for censored VL on diagnosis day: one case of interest
 final_vl_data %>%
   dplyr::filter(dxdt == drawdt & raw_vl == "<20") %>%

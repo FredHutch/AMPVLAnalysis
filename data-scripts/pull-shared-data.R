@@ -4,6 +4,8 @@ library(lubridate)
 library(here)
 
 source(here("R", "directory-funs.R"))
+if(!dir.exists(raw_data_here())) dir.create(raw_data_here())
+if(!dir.exists(mlx_data_here())) dir.create(mlx_data_here())
 
 pubid.703 = read.csv('/Volumes/trials/vaccine/p703/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
 pubid.704 = read.csv('/Volumes/trials/vaccine/p704/analysis/dsmb/2020_08/closed/adata/rx_v2.csv')
@@ -100,7 +102,7 @@ bind_rows(idt.703, idt.704) %>%
   mutate(
     ptid = as.integer(gsub('-','', ptid))
   ) %>%
-  left_join(pubid, by = "ptid") %>%
+  left_join(pub_id_key, by = "ptid") %>%
   filter(pub_id %in% placebo_id) %>%
   mutate(
     infusiondt = as.Date(dmy(idt))

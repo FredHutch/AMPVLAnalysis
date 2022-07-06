@@ -35,8 +35,10 @@ rx_lab = tibble(
 
 shared_drive = dir.exists("/Volumes/trials/")
 
-save_shared_folder = T
+save_shared_folder = F
 if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
+
+if(!dir.exists(here("output/data-processing"))) dir.create(here("output/data-processing"))
 
 ```
 
@@ -353,6 +355,7 @@ n_distinct(subset(pk_data_nm, has_neut_data)$pub_id)
 ```
 
 To create the analysis dataset (and eventual PKPD dataset), the processing must:
+
  - de-nonmem/monolix the data: remove the '.''s, collapse the staggered dosing variables, drop ID, rename the variables
  - unblind (it's already technically unblinded), but can verify the unblinding matches
  - create the relevant time variables
@@ -425,6 +428,7 @@ with(pk_data_stem, ftable(dose, rx_code2)) # can drop this variable
 The `time_data` dataset was created upstream. Here, we subset out based on has_neut_data & infection_pre85wks
 
 Then, we add some key variables:
+
  - final infusion day from clean dose data (above)
  - final_vl_day is max(enrollment_day) based on the vl dataset, rename as final_day [x]
  - from the cleaned vl data:
