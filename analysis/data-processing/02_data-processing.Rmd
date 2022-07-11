@@ -54,6 +54,7 @@ vl_data_all = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
 time_data = read_csv(clean_data_here("ptid-time-data.csv"), col_types = cols())
 pk_data_nm = read_csv(clean_data_here("pk-nm-data.csv"), col_types = cols())
 raw_dose_data = read_csv(raw_data_here("pk-dosing-info.csv"))
+placebo_dose_data = read_csv(raw_data_here("placebo-dosing-all.csv"))
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 infected_ids = rx_dat %>% dplyr::filter(pub_id %in% neut_data$pub_id) %>% pull(pub_id)
 
@@ -283,11 +284,13 @@ neut_data %>%
 
 This contains all infusion dates, rates, and doses. Merge on the diagnosis time, add a time variable and subset to analysis cohort.
 
-There are many participants who received an infusion on their diagnosis date (51). There are 9 rows post-fp but pre-dx.
+There are many participants who received an infusion on their diagnosis date (52). There are 9 rows post-fp but pre-dx.
 
 ```{r dosing-data}
 
 dose_data = raw_dose_data %>%
+  mutate(has_PK = T) %>%
+  bind_rows(mutate(placebo_dose_data, has_PK = F)) %>%
   dplyr::filter(pub_id %in% neut_data$pub_id) %>%
   left_join(select(time_data, pub_id, enrdt, dxdt, fpdt), by = "pub_id") %>%
   mutate(infusiondt = as.character(format(infusiondt, "%m-%d-%Y"))) %>%
@@ -306,20 +309,30 @@ dose_data = raw_dose_data %>%
   ) %>%
   ungroup()
 
-stopifnot(n_distinct(dose_data$pub_id) == 98)
-sum(dose_data$days_dx == 0)
-sum(dose_data$days_dx > 0)
-n_distinct(subset(dose_data, days_dx >= 0)$pub_id)
+stopifnot(n_distinct(subset(dose_data, has_PK)$pub_id) == 98)
+stopifnot(n_distinct(dose_data$pub_id) == 162)
 
-sum(dose_data$days_fp == 0)
-sum(dose_data$days_fp > 0)
-n_distinct(subset(dose_data, days_fp >= 0)$pub_id)
+dose_data %>%
+  group_by(has_PK) %>%
+  summarize(
+    sum(dose_data$days_dx == 0),
+    sum(dose_data$days_dx > 0),
+    n_distinct(pub_id[days_dx >= 0])
+  )
 
-stopifnot(nrow(subset(dose_data, final_infusion_pre_dx)) == 98)
-stopifnot(n_distinct(subset(dose_data, final_infusion_pre_dx)$pub_id) == 98)
+dose_data %>%
+  group_by(has_PK) %>%
+  summarize(
+    sum(dose_data$days_fp == 0),
+    sum(dose_data$days_fp > 0),
+    n_distinct(pub_id[days_fp >= 0])
+  )
 
-stopifnot(nrow(subset(dose_data, final_infusion_pre_fp)) == 98)
-stopifnot(n_distinct(subset(dose_data, final_infusion_pre_fp)$pub_id) == 98)
+stopifnot(nrow(subset(dose_data, final_infusion_pre_dx)) == 162)
+stopifnot(n_distinct(subset(dose_data, final_infusion_pre_dx)$pub_id) == 162)
+
+stopifnot(nrow(subset(dose_data, final_infusion_pre_fp)) == 162)
+stopifnot(n_distinct(subset(dose_data, final_infusion_pre_fp)$pub_id) == 162)
 
 ```
 
@@ -446,7 +459,7 @@ time_data_test = left_join(time_data, rx_dat, by = "pub_id")
 mismatch_time_ptids = dplyr::filter(time_data_test, dx_day != fp_day)
 
 final_infusion_data = dose_data %>%
-  group_by(pub_id) %>%
+  group_by(pub_id, has_PK) %>%
   summarize(
     final_infusion_day = days_enrollment[which.max(infusion_no)],
     final_infusion_pre_dx_day = days_enrollment[final_infusion_pre_dx],
@@ -458,8 +471,8 @@ final_infusion_data = dose_data %>%
   ) 
 
 
-stopifnot(nrow(final_infusion_data)== 98)
-stopifnot(n_distinct(final_infusion_data$pub_id)== 98)
+stopifnot(nrow(final_infusion_data)== 162)
+stopifnot(n_distinct(final_infusion_data$pub_id)== 162)
 
 stopifnot(all(final_infusion_data$final_infusion_day >= final_infusion_data$final_infusion_pre_dx_day))
 stopifnot(all(final_infusion_data$final_infusion_pre_dx_day >= final_infusion_data$final_infusion_pre_fp_day))
@@ -477,6 +490,7 @@ pk_data_final_infusions = pk_data_stem %>%
   ) 
 
 final_infusion_data %>%
+  mutate(has_PK) %>%
   dplyr::select(pub_id, final_infusion_pre_dx_day, total_infusions_pre_dx, final_infusion_pre_fp_day) %>%
   full_join(pk_data_final_infusions, by = "pub_id") %>%
   dplyr::filter(total_infusions_pre_dx != total_infusions)
@@ -513,7 +527,7 @@ stopifnot(all(vl_time_summary$fp_day > vl_time_summary$last_neg_day))
 time_summary_full = time_data %>%
   rename(final_day = final_vl_day) %>%
   left_join(dplyr::select(vl_time_summary, -dx_day, -fp_day), by = "pub_id") %>%
-  left_join(select(final_infusion_data, -contains("total_")), by = "pub_id")
+  left_join(select(final_infusion_data, -contains("total_"), -has_PK), by = "pub_id")
 
 ```
 
@@ -555,7 +569,7 @@ time_analysis = time_summary_full %>%
 
 n_distinct(time_analysis$pub_id)
 stopifnot(n_distinct(time_analysis$pub_id) == 162)
-stopifnot(sum(is.na(time_analysis$final_infusion_day)) == 162 - 98)
+stopifnot(all(!is.na(time_analysis$final_infusion_day)))
 
 stopifnot(n_distinct(subset(time_analysis, vl_model_flag)$pub_id) == 158)
 
@@ -576,7 +590,10 @@ dplyr::select(vl_data_analysis, -flag) %>%
   glimpse() %>%
   write_csv(clean_data_here("adata-vl.csv"))
 
+stopifnot(n_distinct(subset(dose_data, has_PK)$pub_id) == 98)
 dose_data %>%
+  dplyr::filter(has_PK) %>%
+  dplyr::select(-has_PK) %>%
   glimpse() %>%
   write_csv(clean_data_here("dosing-data.csv"))
 

@@ -86,7 +86,7 @@ Outline the cohort information, and highlight data that we need as we are perfor
     - total isolates
     - neutralization (how do we downselect this variable). least sensitive IC80 used in NEJM paper
   
-PG: I would think this table would include information on available VL data pre and post ART initiation for all of the scheduled viral load sampling visits.  And indeed the basic flow stuff about numbers randomized, numbers acquiring HIV, and of those numbers with viral load data by visit.  Ideally the table would orient to the data available by IC80 >= 1 and IC80 < 1
+PG: I would think this table would include information on available VL data pre and post ART initiation for all of the scheduled viral load sampling visits.  And indeed the basic flow stuff about numbers randomized, numbers acquiring HIV, and of those numbers with viral load data by visit. Ideally the table would orient to the data available by IC80 >= 1 and IC80 < 1
 
 
 # Results

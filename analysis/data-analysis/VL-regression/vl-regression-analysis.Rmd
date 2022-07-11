@@ -17,6 +17,10 @@ library(kableExtra)
 library(GGally)
 library(cowplot)
 library(emmeans)
+library(drtmle)
+library(SuperLearner)
+library(nloptr)
+library(janitor)
 theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
 
 source(here("R", "directory-funs.R"))
@@ -41,31 +45,63 @@ rx_labeller = tibble(
 
 ```{r load-data}
 
+outcome_map = tribble(
+  ~trt_ic80, ~trt_ic80_code,
+  "Placebo, IC80 < 1 mcg/mL", 1,
+  "Placebo, IC80 >= 1 mcg/mL", 2,
+  "VRC01 (10mg/kg), IC80 < 1 mcg/mL", 3,
+  "VRC01 (10mg/kg), IC80 >= 1 mcg/mL", 4,
+  "VRC01 (30mg/kg), IC80 < 1 mcg/mL", 5,
+  "VRC01 (30mg/kg), IC80 >= 1 mcg/mL", 6
+)
+
+outcome_pool_map = tribble(
+  ~trt_ic80_pool, ~trt_ic80_pool_code,
+  "Placebo, IC80 < 1 mcg/mL", 1,
+  "Placebo, IC80 >= 1 mcg/mL", 2,
+  "VRC01 (Pooled), IC80 < 1 mcg/mL", 3,
+  "VRC01 (Pooled), IC80 >= 1 mcg/mL", 4
+)
+
 vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>%
   mutate(
     ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
     rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
-    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)")
-  )
+    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)"),
+    trt_ic80 = paste(rx_lab, ic80gte1, sep = ", "),
+    trt_ic80_pool = paste(rx_pool, ic80gte1, sep = ", ")
+  ) %>%
+  left_join(outcome_map, by = "trt_ic80") %>%
+  left_join(outcome_pool_map, by = "trt_ic80_pool")
 
 first_positive = vl_data %>% 
-  dplyr::filter(days_fp == 0)
+  dplyr::filter(days_fp == 0) %>%
+  mutate(
+    isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3
+  ) %>%
+  arrange(trt_ic80_code)
+
+
+first_positive %>%
+  tabyl(trt_ic80, trt_ic80_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
+
+first_positive %>%
+  tabyl(trt_ic80_pool, trt_ic80_pool_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 
 ```
 
 ## Overview
 
-For the GEE analysis, I had envisioned following the approach laid out in your and Holly’s nature med paper on multiple founders and viral loads. There were three VL outcomes based on that paper that I thought would be relevant for this study:
-- log10 VL at first positive
-- mean log10 VL based on longitudinal data up to 3 months. This would use GEE with IPW
-- setpoint log10 VL (mean log10 VL 8-12 weeks post-infection). We could use multiple imputation or impute from the mathematical models, would be curious thoughts on this?
-Maybe we could use Friday’s meeting to discuss model specification regarding other relevant variables to include (ex, total isolates, IC80 category)
-
-
-PG: To minimize potential post-randomization selection bias, generally we'd try to use baseline covariate adjustment in all models assessing different viral loads across randomized arms.  Baseline variables that dually predict viral load and HIV-1 acquisition cause selection bias.  There are not smoking gun baseline covariates to be concerned about.  Generally for all baseline covariate adjusted analyses we have adjusted for study/region, which we have defined as having levels
-(1) South Africa/703, (2) not South Africa/703, (3) US or Switzerland/704, (4) South America/704.  Its advantageous to use this same type of adjustment, just for consistency across papers.  It probably won't make much difference. 
+See methods-discussion.md
 
 ## First positive analysis
+
 
 ```{r}
 
@@ -73,7 +109,7 @@ ggplot(first_positive, aes(x = protocol, y = log10vl)) +
   geom_boxplot() +
   geom_point() +
   facet_grid(ic80gte1 ~ rx_lab) +
-  labs(y = "First positive log10 viral load", x = "VRC01 Groups")
+  labs(y = "First positive log10 viral load", x = "Protocol")
 
 ```
 
@@ -84,17 +120,46 @@ ggplot(first_positive, aes(x = study_region_cat, y = log10vl)) +
   geom_boxplot() +
   geom_point() +
   facet_grid(ic80gte1 ~ rx_lab) +
-  labs(y = "First positive log10 viral load", 
-       x = "VRC01 Groups")
+  labs(y = "First positive log10 viral load") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### All groups
+
+```{r fp-drtmle}
+# South America/704  is biggest category
+
+outcome = first_positive$log10vl
+trt_groups = first_positive$trt_ic80_code
+cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>% 
+  mutate(across(.fns = as.numeric))
+
+drtmle_fit_fp = drtmle(Y = outcome, A = trt_groups, W = cov,
+             stratify = FALSE,
+             SL_g = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             SL_Q = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             #glm_Qr = "gn",
+             #glm_gr = "Qn",
+             SL_gr = c("SL.glm", "SL.mean"),
+             SL_Qr = c("SL.glm", "SL.mean"),
+             cvFolds = 10,
+             SL_method = "method.NNLS", family = gaussian(), returnModels = TRUE)
+
+        
+# compare point estimates for all different estimators
+drtmle_fit_fp_ci = ci(drtmle_fit_fp, est = c("drtmle", "tmle", "aiptw", "gcomp"))
+drtmle_mm_fp = map2_df(drtmle_fit_fp_ci, names(drtmle_fit_fp_ci),
+                       ~mutate(as_tibble(.x, rownames = "trt_ic80_code"), model = .y)) %>%
+  mutate(trt_ic80_code = as.numeric(trt_ic80_code)) %>%
+  left_join(outcome_map, by = "trt_ic80_code")
 
 ```
 
 
+```{r fp-lm}
 
-```{r fp-bygroup}
-
-mod_fp_interaction = lm(log10vl ~ study_region_cat + rx_lab * ic80gte1, data = first_positive)
-mod_fp_main_effects = lm(log10vl ~ study_region_cat + rx_lab * ic80gte1, data = first_positive)
+mod_fp_interaction = lm(log10vl ~ study_region_cat + trt_ic80, data = first_positive)
 
 summary(mod_fp_interaction)
 
@@ -102,11 +167,67 @@ anova(mod_fp_interaction) %>% as_tibble(rownames = "Variable") %>%
   kable(caption = "ANOVA: Dose group with IC80 >= 1 interaction", digits = 3) %>%
   kable_styling(full_width = T)
 
-emmeans(mod_fp_interaction, ~ ic80gte1+rx_lab) %>%
+emmeans(mod_fp_interaction, ~ trt_ic80) %>%
   as_tibble() %>%
-  ggplot(aes(x = rx_lab, y = emmean, ymin = lower.CL, ymax = upper.CL)) +
-  geom_pointrange() +
-  facet_wrap(~ic80gte1, ncol = 1) +
+  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
+  mutate(model = "LM") %>%
+  bind_rows(drtmle_mm_fp) %>%
+  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu, colour = model)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
+  coord_flip()
+
+emmeans(mod_fp_interaction, pairwise ~ ic80gte1*rx_lab, adjust = "mvt") 
+
+```
+
+### Pooled Treatment
+
+```{r fp-drtmle-pool}
+# South America/704  is biggest category
+
+outcome = first_positive$log10vl
+trt_groups_pool = first_positive$trt_ic80_pool_code
+cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>% 
+  mutate(across(.fns = as.numeric))
+
+drtmle_fit_fp_pool = drtmle(Y = outcome, A = trt_groups_pool, W = cov,
+             stratify = FALSE,
+             SL_g = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             SL_Q = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             #glm_Qr = "gn",
+             #glm_gr = "Qn",
+             SL_gr = c("SL.glm", "SL.mean"),
+             SL_Qr = c("SL.glm", "SL.mean"),
+             cvFolds = 10,
+             SL_method = "method.NNLS", family = gaussian(), returnModels = TRUE)
+
+# compare point estimates for all different estimators
+drtmle_fp_pool_ci = ci(drtmle_fit_fp_pool, est = c("drtmle", "tmle", "aiptw", "gcomp"))
+drtmle_mm_fp_pool = map2_df(drtmle_fp_pool_ci, names(drtmle_fp_pool_ci),
+                       ~mutate(as_tibble(.x, rownames = "trt_ic80_pool_code"), model = .y)) %>%
+  mutate(trt_ic80_pool_code = as.numeric(trt_ic80_pool_code)) %>%
+  left_join(outcome_pool_map, by = "trt_ic80_pool_code")
+
+```
+
+
+```{r fp-lm}
+mod_fp_pool_interaction = lm(log10vl ~ study_region_cat + trt_ic80_pool, data = first_positive)
+
+summary(mod_fp_pool_interaction)
+
+anova(mod_fp_pool_interaction) %>% as_tibble(rownames = "Variable") %>%
+  kable(caption = "ANOVA: Dose group with IC80 >= 1 interaction", digits = 3) %>%
+  kable_styling(full_width = T)
+
+emmeans(mod_fp_pool_interaction, ~ trt_ic80_pool) %>%
+  as_tibble() %>%
+  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
+  mutate(model = "LM") %>%
+  bind_rows(drtmle_mm_fp_pool) %>%
+  ggplot(aes(x = trt_ic80_pool, y = est, ymin = cil, ymax = ciu, colour = model)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
   labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
   coord_flip()
 
@@ -116,7 +237,6 @@ emmeans(mod_fp_interaction, pairwise ~ ic80gte1*rx_lab, adjust = "mvt")
 
 ```{r fp-pool}
 
-mod_fp_pool_interaction = lm(log10vl ~ study_region_cat + rx_pool * ic80gte1, data = first_positive)
 mod_fp_pool_main_effects = lm(log10vl ~ study_region_cat + rx_pool * ic80gte1, data = first_positive)
 
 summary(mod_fp_pool_interaction)
