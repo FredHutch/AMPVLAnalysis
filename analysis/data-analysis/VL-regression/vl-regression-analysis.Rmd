@@ -40,6 +40,30 @@ rx_labeller = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
+pairwise_contrast_wrap = function(n, loc1, loc2){
+  x = rep(0, n)
+  x[loc1] = 1
+  x[loc2] = -1
+  x
+}
+
+get_drtmle_contrasts = function(drtmle_obj){
+  n_grps = length(drtmle_obj$drtmle$est)
+  tibble(grps = combn(1:n_grps, 2, paste, collapse = '_')) %>%
+    separate(grps, into = c("grp1", "grp2"), sep = "_", convert = T) %>%
+    mutate(
+      contrast_res = map2(grp1, grp2, ~as_tibble(
+        ci(drtmle_obj, contrast = pairwise_contrast_wrap(n_grps, .x, .y))$drtmle, 
+        rownames = "contrast")),
+      pvalue =  map2_dbl(grp1, grp2, ~wald_test(drtmle_obj, 
+                                                contrast = pairwise_contrast_wrap(n_grps, .x, .y),
+                                                est = "tmle")$tmle[2]
+      )
+    ) %>%
+    ungroup() %>%
+    unnest(cols = contrast_res)
+}
+
 ```
 
 
@@ -137,18 +161,19 @@ cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>%
 
 drtmle_fit_fp = drtmle(Y = outcome, A = trt_groups, W = cov,
              stratify = FALSE,
-             SL_g = c("SL.glm", "SL.glm.interaction", "SL.gam"),
-             SL_Q = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             SL_Q = c("SL.glm", "SL.mean", "SL.bayesglm", "SL.glmnet"),
+             SL_g = c("SL.glm", "SL.mean", "SL.bayesglm", "SL.step"),
+             guard = NULL,
              #glm_Qr = "gn",
              #glm_gr = "Qn",
-             SL_gr = c("SL.glm", "SL.mean"),
-             SL_Qr = c("SL.glm", "SL.mean"),
+             #SL_gr = c("SL.glm", "SL.mean"),
+             #SL_Qr = c("SL.glm", "SL.mean"),
              cvFolds = 10,
-             SL_method = "method.NNLS", family = gaussian(), returnModels = TRUE)
+             SL_method = "method.NNLS", family = gaussian(), returnModels = F)
 
         
 # compare point estimates for all different estimators
-drtmle_fit_fp_ci = ci(drtmle_fit_fp, est = c("drtmle", "tmle", "aiptw", "gcomp"))
+drtmle_fit_fp_ci = ci(drtmle_fit_fp, est = c( "tmle", "aiptw", "gcomp", "drtmle"))
 drtmle_mm_fp = map2_df(drtmle_fit_fp_ci, names(drtmle_fit_fp_ci),
                        ~mutate(as_tibble(.x, rownames = "trt_ic80_code"), model = .y)) %>%
   mutate(trt_ic80_code = as.numeric(trt_ic80_code)) %>%
@@ -177,8 +202,8 @@ emmeans(mod_fp_interaction, ~ trt_ic80) %>%
   labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
   coord_flip()
 
-emmeans(mod_fp_interaction, pairwise ~ ic80gte1*rx_lab, adjust = "mvt") 
-
+emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none") 
+get_drtmle_contrasts(drtmle_fit_fp) %>% left_join(outcome_map, by = c("grp1" = "trt_ic80_code")) %>% left_join(outcome_map, by = c("grp2" = "trt_ic80_code"), suffix = c("_grp1", "_grp2"))
 ```
 
 ### Pooled Treatment
@@ -193,14 +218,16 @@ cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>%
 
 drtmle_fit_fp_pool = drtmle(Y = outcome, A = trt_groups_pool, W = cov,
              stratify = FALSE,
-             SL_g = c("SL.glm", "SL.glm.interaction", "SL.gam"),
-             SL_Q = c("SL.glm", "SL.glm.interaction", "SL.gam"),
+             SL_g = c("SL.randomForest"),
+             SL_Q = c("SL.bayesglm"),
+             guard = NULL,
              #glm_Qr = "gn",
              #glm_gr = "Qn",
-             SL_gr = c("SL.glm", "SL.mean"),
-             SL_Qr = c("SL.glm", "SL.mean"),
+             #SL_gr = c("SL.glm", "SL.mean"),
+             #SL_Qr = c("SL.glm", "SL.mean"),
              cvFolds = 10,
-             SL_method = "method.NNLS", family = gaussian(), returnModels = TRUE)
+             #SL_method = "method.NNLS", 
+             family = gaussian(), returnModels = F)
 
 # compare point estimates for all different estimators
 drtmle_fp_pool_ci = ci(drtmle_fit_fp_pool, est = c("drtmle", "tmle", "aiptw", "gcomp"))
@@ -208,6 +235,7 @@ drtmle_mm_fp_pool = map2_df(drtmle_fp_pool_ci, names(drtmle_fp_pool_ci),
                        ~mutate(as_tibble(.x, rownames = "trt_ic80_pool_code"), model = .y)) %>%
   mutate(trt_ic80_pool_code = as.numeric(trt_ic80_pool_code)) %>%
   left_join(outcome_pool_map, by = "trt_ic80_pool_code")
+
 
 ```
 
@@ -231,7 +259,11 @@ emmeans(mod_fp_pool_interaction, ~ trt_ic80_pool) %>%
   labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
   coord_flip()
 
-emmeans(mod_fp_interaction, pairwise ~ ic80gte1*rx_lab, adjust = "mvt") 
+emmeans(mod_fp_pool_interaction, pairwise ~ trt_ic80_pool, adjust = "none") 
+get_drtmle_contrasts(drtmle_fit_fp_pool) %>% 
+  left_join(outcome_pool_map, by = c("grp1" = "trt_ic80_pool_code")) %>% 
+  left_join(outcome_pool_map, by = c("grp2" = "trt_ic80_pool_code"), suffix = c("_grp1", "_grp2"))
+
 
 ```
 
