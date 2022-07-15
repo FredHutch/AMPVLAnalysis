@@ -18,9 +18,10 @@ library(GGally)
 library(cowplot)
 library(emmeans)
 library(drtmle)
-library(SuperLearner)
-library(nloptr)
+#library(SuperLearner)
+#library(nloptr)
 library(janitor)
+library(cowplot)
 theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
 
 source(here("R", "directory-funs.R"))
@@ -40,7 +41,48 @@ rx_labeller = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
-pairwise_contrast_wrap = function(n, loc1, loc2){
+final_model = 'drtmle'
+
+```
+
+
+```{r lm-wraps}
+
+.get_lm_contrasts = function(lm_obj, lm_trt_var){
+  contrast_obj = emmeans(lm_obj, as.formula(paste("pairwise ~", lm_trt_var)), 
+                     adjust = "none", parens = NULL)
+  
+  constrast_ci = confint(contrast_obj)$contrasts %>%
+    as_tibble() %>%
+    select(contrast, cil =  lower.CL,  ciu = upper.CL) 
+  
+  contrast_obj$contrasts %>%
+    as_tibble() %>%
+    rename(est = estimate) %>%
+    left_join(constrast_ci, by = "contrast") %>%
+    mutate(model = 'lm')
+}
+
+run_vl_lm = function(mdata, formula, lm_trt_var){
+  
+  mod_fit = lm(formula, data = first_positive)
+  mm = emmeans(mod_fit, as.formula(paste("~", lm_trt_var))) %>%
+    as_tibble() %>%
+    rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
+    mutate(model = 'lm')
+  
+  contrast = .get_lm_contrasts(mod_fit, lm_trt_var)
+
+  out_list = list(mod_fit, mm, contrast)
+  names(out_list) = c("lm_mod", "mm", "contrast")
+  out_list
+}
+
+```
+
+```{r drtmle-wraps}
+
+.pairwise_contrast_wrap = function(n, loc1, loc2){
   x = rep(0, n)
   x[loc1] = 1
   x[loc2] = -1
@@ -53,25 +95,109 @@ get_drtmle_contrasts = function(drtmle_obj){
     separate(grps, into = c("grp1", "grp2"), sep = "_", convert = T) %>%
     mutate(
       contrast_res = map2(grp1, grp2, ~as_tibble(
-        ci(drtmle_obj, contrast = pairwise_contrast_wrap(n_grps, .x, .y))$drtmle, 
-        rownames = "contrast")),
-      pvalue =  map2_dbl(grp1, grp2, ~wald_test(drtmle_obj, 
-                                                contrast = pairwise_contrast_wrap(n_grps, .x, .y),
-                                                est = "tmle")$tmle[2]
+        ci(drtmle_obj, contrast = .pairwise_contrast_wrap(n_grps, .x, .y))$drtmle, 
+        rownames = "contrast_raw")),
+      p.value =  map2_dbl(grp1, grp2, ~wald_test(drtmle_obj, 
+                                                contrast = .pairwise_contrast_wrap(n_grps, .x, .y),
+                                                est = "drtmle")$drtmle[2]
       )
     ) %>%
     ungroup() %>%
     unnest(cols = contrast_res)
 }
 
-run_drtmle = F
 
+#' Runs drtmle assuming log10vl as outcome, region/protocol as covariate
+#'
+#' @param mdata input model data
+#' @param A_var the treatment variable (must be numeric per drtmle)
+#' @param trt_map a data.frame or tibble (for merging) linking numeric A_var to actual labels
+#' @param ci_method methods for drtmle mm confidence intervals
+#' @param inference_method methods for drtmle inference (fixed to drtmle currently)
+#' @param run_lm flag, if T AND trt_map supplied, will run simple lm using actual label variable
+#' and will stack on mm and constrasts. trt variable name MUST = names(trt_map)[1]
+#' @return a list: the drtmle obj, a mm tibble, a contrast tibble, the lm obj if run
+run_vl_drtmle_glm = function(mdata, A_var,
+                          trt_map = NULL,
+                          ci_method = c( "tmle", "drtmle"),
+                          inference_method = "drtmle",
+                          run_lm = F
+                          ){
+  
+  outcome = mdata$log10vl
+  trt_groups = mdata[[A_var]]
+  
+  # South America/704  is biggest category
+  cov = select(mdata, isSA703, isNSA703, isSwiss704) %>% 
+    mutate(across(.fns = as.numeric))
+
+  # TO DO; write a safely version and save the warnings
+  suppressWarnings({
+    drtmle_fit = drtmle(Y = outcome, A = trt_groups, W = cov,
+               stratify = FALSE,
+               glm_Q = "A + isSA703 + isNSA703 + isSwiss704",
+               glm_g = "isSA703 + isNSA703 + isSwiss704",
+               glm_Qr = "gn",
+               glm_gr = "Qn",
+               family = gaussian(), returnModels = F)
+  })
+  
+  drtmle_mm_ci = ci(drtmle_fit, est = ci_method)
+  drtmle_mm = map2_df(drtmle_mm_ci, names(drtmle_mm_ci),
+                         ~mutate(as_tibble(.x, rownames = A_var), model = .y))
+  
+  drtmle_contrast = mutate(get_drtmle_contrasts(drtmle_fit), model = "drtmle")
+    
+  if(!is.null(trt_map)){
+    drtmle_mm[[A_var]] = as.numeric(drtmle_mm[[A_var]])
+    drtmle_mm = left_join(drtmle_mm, trt_map, by = A_var)
+    
+    drtmle_contrast = left_join(drtmle_contrast, trt_map, by = c("grp1" = A_var)) %>% 
+      left_join(trt_map, by = c("grp2" = A_var), suffix = c("_grp1", "_grp2")) %>%
+      unite("contrast", paste0(names(trt_map)[1], "_grp1"), paste0(names(trt_map)[1], "_grp2"), 
+            sep = " - ")
+    
+    if(run_lm){
+      lm_trt_var = names(trt_map)[1]
+      lm_formula = as.formula(paste("log10vl ~ isSA703 + isNSA703 + isSwiss704 +", lm_trt_var))
+      lm_output = run_vl_lm(mdata = first_positive,
+                            formula = lm_formula, 
+                            lm_trt_var = lm_trt_var)
+      drtmle_mm = bind_rows(drtmle_mm, lm_output[['mm']])
+      drtmle_contrast = bind_rows(drtmle_contrast, lm_output[['contrast']])
+    }
+    
+    drtmle_mm$trt_var = drtmle_mm[[names(trt_map)[1]]] # generic across models
+  }
+
+  if(exists('lm_output')){
+    out_list = list(drtmle_fit, lm_output[['lm_mod']], drtmle_mm, drtmle_contrast)
+    names(out_list) = c("fit", "lm_mod", "mm", "contrast")
+    } else{
+    out_list = list(drtmle_fit, drtmle_mm, drtmle_contrast)
+    names(out_list) = c("fit", "mm", "contrast")
+  }
+  return(out_list)
+        
+}
 ```
 
+```{r data-setup}
 
-```{r load-data}
+rx_map = tribble(
+  ~rx_lab, ~rx_code,
+  "Placebo", 1,
+  "VRC01 (10mg/kg)", 2,
+  "VRC01 (30mg/kg)", 3
+)
 
-outcome_map = tribble(
+rx_pool_map = tribble(
+  ~rx_pool, ~rx_pool_code,
+  "Placebo", 1,
+  "VRC01 (Pooled)", 2
+)
+
+trt_grp_map = tribble(
   ~trt_ic80, ~trt_ic80_code,
   "Placebo, IC80 < 1 mcg/mL", 1,
   "Placebo, IC80 >= 1 mcg/mL", 2,
@@ -81,7 +207,7 @@ outcome_map = tribble(
   "VRC01 (30mg/kg), IC80 >= 1 mcg/mL", 6
 )
 
-outcome_pool_map = tribble(
+trt_pool_map = tribble(
   ~trt_ic80_pool, ~trt_ic80_pool_code,
   "Placebo, IC80 < 1 mcg/mL", 1,
   "Placebo, IC80 >= 1 mcg/mL", 2,
@@ -97,8 +223,15 @@ vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>
     trt_ic80 = paste(rx_lab, ic80gte1, sep = ", "),
     trt_ic80_pool = paste(rx_pool, ic80gte1, sep = ", ")
   ) %>%
-  left_join(outcome_map, by = "trt_ic80") %>%
-  left_join(outcome_pool_map, by = "trt_ic80_pool")
+  dplyr::select(-rx_code) %>%
+  left_join(trt_grp_map, by = "trt_ic80") %>%
+  left_join(trt_pool_map, by = "trt_ic80_pool") %>%
+  left_join(rx_map, by = "rx_lab") %>%
+  left_join(rx_pool_map, by = "rx_pool")  
+
+# this would signify a data change
+stopifnot(nrow(vl_data) == 880)
+stopifnot(all(!is.na(select(vl_data, -artstartdt))))
 
 first_positive = vl_data %>% 
   dplyr::filter(days_fp == 0) %>%
@@ -109,6 +242,25 @@ first_positive = vl_data %>%
   ) %>%
   arrange(trt_ic80_code)
 
+```
+
+## Overview
+
+See methods-discussion.md
+
+## First positive analysis
+
+```{r}
+
+first_positive %>%
+  tabyl(rx_lab, rx_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
+
+first_positive %>%
+  tabyl(rx_pool, rx_pool_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 
 first_positive %>%
   tabyl(trt_ic80, trt_ic80_code) %>%
@@ -121,13 +273,6 @@ first_positive %>%
   kable_styling(full_width= F)
 
 ```
-
-## Overview
-
-See methods-discussion.md
-
-## First positive analysis
-
 
 ```{r}
 
@@ -151,35 +296,108 @@ ggplot(first_positive, aes(x = study_region_cat, y = log10vl)) +
 
 ```
 
-### All groups
+
+```{r run-models}
+trt_grp_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "rx_code", trt_map = rx_map, run_lm = T)
+trt_grp_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "rx_pool_code", trt_map = rx_pool_map, run_lm = T)
+trt_ic80_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
+trt_ic80_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_pool_code", trt_map = trt_pool_map, run_lm = T)
+
+fp_models = list(trt_grp_fp, trt_ic80_fp, trt_grp_pool_fp, trt_ic80_pool_fp)
+```
+
+
+```{r mm-plots}
+
+fp_mm_pls = map(fp_models, ~(
+  .[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
+    scale_y_continuous(limits = c(2.5, 6.1)) +
+    coord_flip()
+))
+
+plot_grid(plotlist = fp_mm_pls)
+
+```
+
+
+```{r contrast-plots}
+
+fp_contrast_pls = map(fp_models, ~(
+  .[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
+    coord_flip()
+))
+
+plot_grid(plotlist = fp_contrast_pls)
+
+
+
+```
+
+
+### Trt groups only
+
+```{r fp-trt, eval = run_drtmle}
+
+
+trt_grp_fp[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
+  coord_flip()
+
+emmeans(mod_fp_interaction, ~ trt_ic80) %>%
+  as_tibble() %>%
+  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
+  mutate(model = "LM") %>%
+  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
+  coord_flip()
+
+emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
+  as_tibble() %>%
+  mutate(cil = estimate - qt(0.975, df = df) * t.ratio, ciu = estimate + qt(0.975, df = df) * t.ratio) %>%
+  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
+  coord_flip()
+
+```
+
+### All groups (trt x viral sensitivity)
 
 ```{r fp-drtmle, eval = run_drtmle}
-# South America/704  is biggest category
 
-outcome = first_positive$log10vl
-trt_groups = first_positive$trt_ic80_code
-cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>% 
-  mutate(across(.fns = as.numeric))
+fp_full_res = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map)
 
-drtmle_fit_fp = drtmle(Y = outcome, A = trt_groups, W = cov,
-             stratify = FALSE,
-             SL_Q = c("SL.glm", "SL.mean", "SL.bayesglm", "SL.glmnet"),
-             SL_g = c("SL.glm", "SL.mean", "SL.bayesglm", "SL.step"),
-             guard = NULL,
-             #glm_Qr = "gn",
-             #glm_gr = "Qn",
-             #SL_gr = c("SL.glm", "SL.mean"),
-             #SL_Qr = c("SL.glm", "SL.mean"),
-             cvFolds = 10,
-             SL_method = "method.NNLS", family = gaussian(), returnModels = F)
+emmeans(mod_fp_interaction, ~ trt_ic80) %>%
+  as_tibble() %>%
+  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
+  mutate(model = "LM") %>%
+  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
+  coord_flip()
 
-        
-# compare point estimates for all different estimators
-drtmle_fit_fp_ci = ci(drtmle_fit_fp, est = c( "tmle", "aiptw", "gcomp", "drtmle"))
-drtmle_mm_fp = map2_df(drtmle_fit_fp_ci, names(drtmle_fit_fp_ci),
-                       ~mutate(as_tibble(.x, rownames = "trt_ic80_code"), model = .y)) %>%
-  mutate(trt_ic80_code = as.numeric(trt_ic80_code)) %>%
-  left_join(outcome_map, by = "trt_ic80_code")
+emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
+  as_tibble() %>%
+  mutate(cil = estimate - qt(0.975, df = df) * t.ratio, ciu = estimate + qt(0.975, df = df) * t.ratio) %>%
+  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
+  coord_flip()
 
 ```
 
@@ -221,13 +439,13 @@ emmeans(mod_fp_interaction, ~ trt_ic80) %>%
   as_tibble() %>%
   rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
   mutate(model = "LM") %>%
-  bind_rows(drtmle_mm_fp) %>%
+  bind_rows(fp_full_res[["mm"]]) %>%
   ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu, colour = model)) +
   geom_pointrange(position = position_dodge(width = 0.5)) +
   labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
   coord_flip()
 
-get_drtmle_contrasts(drtmle_fit_fp) %>% left_join(outcome_map, by = c("grp1" = "trt_ic80_code")) %>% left_join(outcome_map, by = c("grp2" = "trt_ic80_code"), suffix = c("_grp1", "_grp2"))
+
 ```
 
 ### Pooled Treatment
