@@ -16,6 +16,7 @@ library(GGally)
 library(cowplot)
 library(survival)
 library(survminer)
+library(knitr)
 theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
 
 source(here("R", "directory-funs.R"))
@@ -33,7 +34,7 @@ color_protocol = c("magenta", "purple")
 
 ytitle_fp = "Cumulative fraction first RNA+"
 ytitle_art = "Cumulative fraction ART initiation"
-
+opts_chunk$set(dev = c("png", "pdf"))
 
 ```
 
@@ -43,7 +44,6 @@ time_summary_data = read_csv(clean_data_here("adata-time-summary.csv"), col_type
   mutate(
     protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 081", "HVTN 704/HPTN 085")
     )
-
 
 ```
 
@@ -121,7 +121,7 @@ ggsurvplot(
 
 ```
 
-```{r amp703, fig.height=7}
+```{r amp703-art-tbl, fig.height=7}
 
 surv_703 = survfit(Surv(time_to_art, any_art) ~ grp, 
                    data = subset(art_surv_data, protocol == "HVTN 703"))
@@ -146,7 +146,7 @@ pl_703
 
 ```
 
-```{r amp704, fig.height=7}
+```{r amp704-art-tbl, fig.height=7}
 
 surv_704 = survfit(Surv(time_to_art, any_art) ~ grp, 
                    data = subset(art_surv_data, protocol == "HVTN 704"))
@@ -171,7 +171,7 @@ pl_704
 ```
 
 
-```{r protocol}
+```{r art-protocol-tbl}
 
 surv_protocol = survfit(Surv(time_to_art, any_art) ~ protocol_full, 
                    data = art_surv_data)
@@ -195,7 +195,7 @@ pl_protocol
 
 ```
 
-```{r ic80}
+```{r art-ic80-tbl}
 
 surv_ic80 = survfit(Surv(time_to_art, any_art) ~ ic80gte1, 
                    data = art_surv_data)
@@ -220,7 +220,7 @@ pl_ic80
 
 ```
 
-```{r inc-both}
+```{r inc-art-trt}
 
 plot_grid(nrow = 2, rel_heights = c(12,2),
           plot_grid(pl_703$plot + theme(legend.position = "none"), 
@@ -231,14 +231,14 @@ plot_grid(nrow = 2, rel_heights = c(12,2),
 ```
 
 
-```{r protocol-pool, fig.width = 4}
+```{r inc-art-protocol, fig.width = 4}
 
-pl_protocol$plot + theme(legend.position = "bottom")
+pl_protocol$plot + theme(legend.position = "bottom", legend.text = element_text(size = 9))
 
 ```
 
 
-```{r ic80-pool, fig.width = 4}
+```{r inc-art-ic80, fig.width = 4}
 
 pl_ic80$plot + theme(legend.position = "bottom")
 
@@ -404,7 +404,7 @@ fp_pl_ic80
 
 ```
 
-```{r fp-inc-both}
+```{r inc-fp-trt}
 
 plot_grid(nrow = 2, rel_heights = c(12,2),
           plot_grid(fp_pl_703$plot + theme(legend.position = "none"), 
@@ -415,14 +415,14 @@ plot_grid(nrow = 2, rel_heights = c(12,2),
 ```
 
 
-```{r fp-protocol-pool, fig.width = 4}
+```{r inc-fp-protocol, fig.width = 4}
 
-fp_pl_protocol$plot + theme(legend.position = "bottom")
+fp_pl_protocol$plot + theme(legend.position = "bottom", legend.text = element_text(size = 11))
 
 ```
 
 
-```{r fp-ic80-pool, fig.width = 4}
+```{r inc-fp-ic80, fig.width = 4}
 
 fp_pl_ic80$plot + theme(legend.position = "bottom")
 

@@ -7,7 +7,7 @@ output:
     keep_md: true
 ---
 
-```{r load-packages, echo = FALSE, message=F,output=F}
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
 knitr::opts_chunk$set(echo = F)
 library(VISCfunctions)
 library(tidyverse)
@@ -25,6 +25,7 @@ library(cowplot)
 theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
 
 source(here("R", "directory-funs.R"))
+source(here("R", "vl-regression-funs.R"))
 
 #stopifnot(dir.exists("/Volumes/trials/"))
 
@@ -41,146 +42,10 @@ rx_labeller = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
-final_model = 'drtmle'
+final_model = 'lm'
 
 ```
 
-
-```{r lm-wraps}
-
-.get_lm_contrasts = function(lm_obj, lm_trt_var){
-  contrast_obj = emmeans(lm_obj, as.formula(paste("pairwise ~", lm_trt_var)), 
-                     adjust = "none", parens = NULL)
-  
-  constrast_ci = confint(contrast_obj)$contrasts %>%
-    as_tibble() %>%
-    select(contrast, cil =  lower.CL,  ciu = upper.CL) 
-  
-  contrast_obj$contrasts %>%
-    as_tibble() %>%
-    rename(est = estimate) %>%
-    left_join(constrast_ci, by = "contrast") %>%
-    mutate(model = 'lm')
-}
-
-run_vl_lm = function(mdata, formula, lm_trt_var){
-  
-  mod_fit = lm(formula, data = first_positive)
-  mm = emmeans(mod_fit, as.formula(paste("~", lm_trt_var))) %>%
-    as_tibble() %>%
-    rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-    mutate(model = 'lm')
-  
-  contrast = .get_lm_contrasts(mod_fit, lm_trt_var)
-
-  out_list = list(mod_fit, mm, contrast)
-  names(out_list) = c("lm_mod", "mm", "contrast")
-  out_list
-}
-
-```
-
-```{r drtmle-wraps}
-
-.pairwise_contrast_wrap = function(n, loc1, loc2){
-  x = rep(0, n)
-  x[loc1] = 1
-  x[loc2] = -1
-  x
-}
-
-get_drtmle_contrasts = function(drtmle_obj){
-  n_grps = length(drtmle_obj$drtmle$est)
-  tibble(grps = combn(1:n_grps, 2, paste, collapse = '_')) %>%
-    separate(grps, into = c("grp1", "grp2"), sep = "_", convert = T) %>%
-    mutate(
-      contrast_res = map2(grp1, grp2, ~as_tibble(
-        ci(drtmle_obj, contrast = .pairwise_contrast_wrap(n_grps, .x, .y))$drtmle, 
-        rownames = "contrast_raw")),
-      p.value =  map2_dbl(grp1, grp2, ~wald_test(drtmle_obj, 
-                                                contrast = .pairwise_contrast_wrap(n_grps, .x, .y),
-                                                est = "drtmle")$drtmle[2]
-      )
-    ) %>%
-    ungroup() %>%
-    unnest(cols = contrast_res)
-}
-
-
-#' Runs drtmle assuming log10vl as outcome, region/protocol as covariate
-#'
-#' @param mdata input model data
-#' @param A_var the treatment variable (must be numeric per drtmle)
-#' @param trt_map a data.frame or tibble (for merging) linking numeric A_var to actual labels
-#' @param ci_method methods for drtmle mm confidence intervals
-#' @param inference_method methods for drtmle inference (fixed to drtmle currently)
-#' @param run_lm flag, if T AND trt_map supplied, will run simple lm using actual label variable
-#' and will stack on mm and constrasts. trt variable name MUST = names(trt_map)[1]
-#' @return a list: the drtmle obj, a mm tibble, a contrast tibble, the lm obj if run
-run_vl_drtmle_glm = function(mdata, A_var,
-                          trt_map = NULL,
-                          ci_method = c( "tmle", "drtmle"),
-                          inference_method = "drtmle",
-                          run_lm = F
-                          ){
-  
-  outcome = mdata$log10vl
-  trt_groups = mdata[[A_var]]
-  
-  # South America/704  is biggest category
-  cov = select(mdata, isSA703, isNSA703, isSwiss704) %>% 
-    mutate(across(.fns = as.numeric))
-
-  # TO DO; write a safely version and save the warnings
-  suppressWarnings({
-    drtmle_fit = drtmle(Y = outcome, A = trt_groups, W = cov,
-               stratify = FALSE,
-               glm_Q = "A + isSA703 + isNSA703 + isSwiss704",
-               glm_g = "isSA703 + isNSA703 + isSwiss704",
-               glm_Qr = "gn",
-               glm_gr = "Qn",
-               family = gaussian(), returnModels = F)
-  })
-  
-  drtmle_mm_ci = ci(drtmle_fit, est = ci_method)
-  drtmle_mm = map2_df(drtmle_mm_ci, names(drtmle_mm_ci),
-                         ~mutate(as_tibble(.x, rownames = A_var), model = .y))
-  
-  drtmle_contrast = mutate(get_drtmle_contrasts(drtmle_fit), model = "drtmle")
-    
-  if(!is.null(trt_map)){
-    drtmle_mm[[A_var]] = as.numeric(drtmle_mm[[A_var]])
-    drtmle_mm = left_join(drtmle_mm, trt_map, by = A_var)
-    
-    drtmle_contrast = left_join(drtmle_contrast, trt_map, by = c("grp1" = A_var)) %>% 
-      left_join(trt_map, by = c("grp2" = A_var), suffix = c("_grp1", "_grp2")) %>%
-      unite("contrast", paste0(names(trt_map)[1], "_grp1"), paste0(names(trt_map)[1], "_grp2"), 
-            sep = " - ")
-    
-    if(run_lm){
-      lm_trt_var = names(trt_map)[1]
-      lm_formula = as.formula(paste("log10vl ~ isSA703 + isNSA703 + isSwiss704 +", lm_trt_var))
-      lm_output = run_vl_lm(mdata = first_positive,
-                            formula = lm_formula, 
-                            lm_trt_var = lm_trt_var)
-      drtmle_mm = bind_rows(drtmle_mm, lm_output[['mm']])
-      drtmle_contrast = bind_rows(drtmle_contrast, lm_output[['contrast']])
-    }
-    
-    drtmle_mm$trt_var = drtmle_mm[[names(trt_map)[1]]] # generic across models
-  }
-
-  if(exists('lm_output')){
-    out_list = list(drtmle_fit, lm_output[['lm_mod']], drtmle_mm, drtmle_contrast)
-    names(out_list) = c("fit", "lm_mod", "mm", "contrast")
-    } else{
-    out_list = list(drtmle_fit, drtmle_mm, drtmle_contrast)
-    names(out_list) = c("fit", "mm", "contrast")
-  }
-  return(out_list)
-        
-}
-```
 
 ```{r data-setup}
 
@@ -244,13 +109,13 @@ first_positive = vl_data %>%
 
 ```
 
-## Overview
+# Overview
 
 See methods-discussion.md
 
-## First positive analysis
+# First positive analysis
 
-```{r}
+```{r, eval = F}
 
 first_positive %>%
   tabyl(rx_lab, rx_code) %>%
@@ -274,7 +139,7 @@ first_positive %>%
 
 ```
 
-```{r}
+```{r box-fp-by-protocol}
 
 ggplot(first_positive, aes(x = protocol, y = log10vl)) +
   geom_boxplot() +
@@ -285,7 +150,7 @@ ggplot(first_positive, aes(x = protocol, y = log10vl)) +
 ```
 
 
-```{r}
+```{r box-fp-by-region}
 
 ggplot(first_positive, aes(x = study_region_cat, y = log10vl)) +
   geom_boxplot() +
@@ -303,9 +168,29 @@ trt_grp_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "rx_pool_cod
 trt_ic80_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
 trt_ic80_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_pool_code", trt_map = trt_pool_map, run_lm = T)
 
-fp_models = list(trt_grp_fp, trt_ic80_fp, trt_grp_pool_fp, trt_ic80_pool_fp)
+fp_models = lst(trt_grp_fp, trt_grp_pool_fp, trt_ic80_fp, trt_ic80_pool_fp)
 ```
 
+
+## Mean Viral loads
+
+```{r mm-table}
+
+map2_df(fp_models, names(fp_models), ~ (
+  .x[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2), model_set = .y) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Group` = trt_var, `Mean (95pct CI)` = mean_ci) %>%
+  kable(caption = "Marginal means for first RNA+ log$_{10}$ viral load. Esimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
 
 ```{r mm-plots}
 
@@ -323,8 +208,32 @@ plot_grid(plotlist = fp_mm_pls)
 
 ```
 
+## Group comparisons
 
-```{r contrast-plots}
+```{r comp-table}
+
+map2_df(fp_models, names(fp_models), ~ (
+  .x[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  kable(caption = "Differences in first RNA+ log$_{10}$ viral load. Esimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r contrast-plots, fig.height = 11}
 
 fp_contrast_pls = map(fp_models, ~(
   .[['contrast']] %>%
@@ -336,48 +245,31 @@ fp_contrast_pls = map(fp_models, ~(
     coord_flip()
 ))
 
-plot_grid(plotlist = fp_contrast_pls)
-
-
+plot_grid(plotlist = fp_contrast_pls, ncol = 1)
 
 ```
 
 
-### Trt groups only
+# Set point
 
-```{r fp-trt, eval = run_drtmle}
+```{r set-point-obs}
 
+vl_data %>%
+  filter(days_fp >= 21) %>%
+  group_by(ic80gte1, protocol, rx_lab) %>%
+  summarize(
+    total_ptids = n_distinct(pub_id),
+    .groups = "drop"
+  ) %>%
+  kable(caption = "total ptids with VL measurements 21+ days after first RNA+") %>%
+  kable_styling(full_width = F)
 
-trt_grp_fp[['mm']] %>%
-  filter(model == final_model) %>%
-  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
-  coord_flip()
-
-emmeans(mod_fp_interaction, ~ trt_ic80) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  mutate(model = "LM") %>%
-  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
-  coord_flip()
-
-emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
-  as_tibble() %>%
-  mutate(cil = estimate - qt(0.975, df = df) * t.ratio, ciu = estimate + qt(0.975, df = df) * t.ratio) %>%
-  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
-  coord_flip()
 
 ```
 
 ### All groups (trt x viral sensitivity)
 
-```{r fp-drtmle, eval = run_drtmle}
+```{r fp-drtmle, eval = F}
 
 fp_full_res = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map)
 
@@ -400,348 +292,3 @@ emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
   coord_flip()
 
 ```
-
-
-```{r fp-lm}
-
-mod_fp_interaction = lm(log10vl ~ study_region_cat + trt_ic80, data = first_positive)
-
-summary(mod_fp_interaction)
-
-anova(mod_fp_interaction) %>% as_tibble(rownames = "Variable") %>%
-  kable(caption = "ANOVA: Dose group with IC80 >= 1 interaction", digits = 3) %>%
-  kable_styling(full_width = T)
-
-emmeans(mod_fp_interaction, ~ trt_ic80) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  mutate(model = "LM") %>%
-  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
-  coord_flip()
-
-emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
-  as_tibble() %>%
-  mutate(cil = estimate - qt(0.975, df = df) * t.ratio, ciu = estimate + qt(0.975, df = df) * t.ratio) %>%
-  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
-  coord_flip()
-
-```
-
-
-```{r fp-model-comp, eval = run_drtmle}
-
-emmeans(mod_fp_interaction, ~ trt_ic80) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  mutate(model = "LM") %>%
-  bind_rows(fp_full_res[["mm"]]) %>%
-  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu, colour = model)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
-  coord_flip()
-
-
-```
-
-### Pooled Treatment
-
-```{r fp-drtmle-pool, eval = run_drtmle}
-# South America/704  is biggest category
-
-outcome = first_positive$log10vl
-trt_groups_pool = first_positive$trt_ic80_pool_code
-cov = select(first_positive, isSA703, isNSA703, isSwiss704) %>% 
-  mutate(across(.fns = as.numeric))
-
-drtmle_fit_fp_pool = drtmle(Y = outcome, A = trt_groups_pool, W = cov,
-             stratify = FALSE,
-             SL_g = c("SL.randomForest"),
-             SL_Q = c("SL.bayesglm"),
-             guard = NULL,
-             #glm_Qr = "gn",
-             #glm_gr = "Qn",
-             #SL_gr = c("SL.glm", "SL.mean"),
-             #SL_Qr = c("SL.glm", "SL.mean"),
-             cvFolds = 10,
-             #SL_method = "method.NNLS", 
-             family = gaussian(), returnModels = F)
-
-# compare point estimates for all different estimators
-drtmle_fp_pool_ci = ci(drtmle_fit_fp_pool, est = c("drtmle", "tmle", "aiptw", "gcomp"))
-drtmle_mm_fp_pool = map2_df(drtmle_fp_pool_ci, names(drtmle_fp_pool_ci),
-                       ~mutate(as_tibble(.x, rownames = "trt_ic80_pool_code"), model = .y)) %>%
-  mutate(trt_ic80_pool_code = as.numeric(trt_ic80_pool_code)) %>%
-  left_join(outcome_pool_map, by = "trt_ic80_pool_code")
-
-
-```
-
-
-```{r fp-lm}
-mod_fp_pool_interaction = lm(log10vl ~ study_region_cat + trt_ic80_pool, data = first_positive)
-
-summary(mod_fp_pool_interaction)
-
-anova(mod_fp_pool_interaction) %>% as_tibble(rownames = "Variable") %>%
-  kable(caption = "ANOVA: Dose group with IC80 >= 1 interaction", digits = 3) %>%
-  kable_styling(full_width = T)
-
-emmeans(mod_fp_pool_interaction, ~ trt_ic80_pool) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  ggplot(aes(x = trt_ic80_pool, y = est, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
-  coord_flip()
-
-emmeans(mod_fp_pool_interaction, pairwise ~ trt_ic80_pool, adjust = "none")$contrasts %>%
-  as_tibble() %>%
-  mutate(cil = estimate - qt(0.975, df = df) * SE, ciu = estimate + qt(0.975, df = df) * SE) %>%
-  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
-  coord_flip()
-
-```
-
-```{r fp-pool-model-comp, eval = run_drtmle}
-
-emmeans(mod_fp_pool_interaction, ~ trt_ic80_pool) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  mutate(model = "LM") %>%
-  bind_rows(drtmle_mm_fp_pool) %>%
-  ggplot(aes(x = trt_ic80_pool, y = est, ymin = cil, ymax = ciu, colour = model)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "First positive log10 viral load", x = "VRC01 Groups") +
-  coord_flip()
-
-
-get_drtmle_contrasts(drtmle_fit_fp_pool) %>% 
-  left_join(outcome_pool_map, by = c("grp1" = "trt_ic80_pool_code")) %>% 
-  left_join(outcome_pool_map, by = c("grp2" = "trt_ic80_pool_code"), suffix = c("_grp1", "_grp2"))
-
-```
-
-**everything below is old, due to copying and pasting of document placeholder**
-
-```{r final-adata}
-
-vl_data_analysis_full = vl_data %>%
-  dplyr::filter(!pub_id %in% low_sample_ptids & on_art == 0 & has_neut_data) %>%
-  left_join(dplyr::select(neut_data, -contains("cat")), by = "pub_id") %>%
-  mutate(log10VL = log10(vl_num),
-         rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
-
- write_csv(dplyr::select(vl_data_analysis_full, -flag, -has_neut_data, -infection_pre80wks, -rx),
-                         "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/amp-vl-neut-all.csv")
-
-vl_data_analysis = vl_data_analysis_full %>%
-  dplyr::filter(days_fp >= 0) %>%
-  mutate(ic80ls_cat = factor(if_else(gmt80ls < 1, 0, 1),
-                           levels = 0:1,
-                           labels = c(expression(paste("IC80 < 1 mcg/mL")), 
-                                      expression(paste("IC80" >= "1 mcg/mL")))))
-  
-neut_data_long = neut_data %>%
-  dplyr::select(-contains("cat")) %>%
-  gather("key", "value", -pub_id, -nisolates) %>%
-  mutate(key = str_replace_all(key, "0", "0_")) %>%
-  separate(key, into = c("titer", "isolate"), sep = "_") %>%
-  pivot_wider(names_from = "titer", values_from = "value")
-
-
-kinetics_summary = vl_data_analysis %>%
-  group_by(pub_id, rx_lab, protocol, nisolates, across(contains("gmt"))) %>%
-  nest() %>%
-  summarize(
-    peak = map(data, ~tibble(days_fp = .$days_fp[which.max(.$log10VL)],
-                             log10VL = .$log10VL[which.max(.$log10VL)])),
-    nadir = map(data, ~tibble(days_fp = .$days_fp[which.min(.$log10VL)],
-                             log10VL = .$log10VL[which.min(.$log10VL)])),
-    fp = map(data, ~tibble(days_fp = 0,
-                             log10VL = .$log10VL[.$days_fp == 0])),
-    mean = map(data, ~tibble(days_fp = NA_real_,
-                             log10VL = mean(.$log10VL)))
-    ,`.groups` = "drop") %>%
-  pivot_longer(names_to = "endpoint", values_to = "tib", c(peak, nadir, fp, mean)) %>%
-  unnest(c(tib)) %>%
-  mutate(endpoint_plot = factor(endpoint, levels = ep_labels$levels, labels = ep_labels$label))
-  
-
-censored_pub = subset(vl_data_analysis, cens == 1) %>%
-  distinct(pub_id) %>% pull(pub_id)
-
-```
-
-
-## Exploratory data analysis 
-
-### Longitudinal
-
-```{r vl-scatter-peak, fig.height=7,fig.width=6.5}
-
-ggplot(vl_data_analysis, aes(x = days_fp, y = log10VL, group = pub_id, colour = rx_lab)) +
-  geom_line(alpha = 0.5) +
-  geom_point(data = dplyr::filter(kinetics_summary, endpoint == "peak"), alpha  = 0.75) +
-  scale_y_continuous(breaks = 2:7) +
-  labs(color = "", x = "Days post first positive", y = vl_title) +
-  facet_wrap(~protocol, nrow = 2) 
-
-
-```
-
-
-```{r vl-scatter-groups}
-
-ggplot(vl_data_analysis, aes(x = days_fp, y = log10VL, group = pub_id, colour = rx_lab)) +
-  geom_line(alpha = 0.5) +
-  #geom_point(data = dplyr::filter(kinetics_summary, endpoint == "peak"), alpha  = 0.75) +
-  scale_y_continuous(breaks = 2:7) +
-  labs(color = "", x = "Days post first positive", y = vl_title) +
-  facet_wrap(~ic80ls_cat+rx_lab, nrow = 2, labeller = labeller(ic80ls_cat = label_parsed)) +
-  theme(legend.position = "none")
-
-
-```
-
-
-```{r vl-time-peak}
-
-kinetics_summary %>% 
-  dplyr::filter(endpoint == "peak") %>%
-  ggplot(aes(x = days_fp, y = log10VL, colour = rx_lab)) +
-  geom_point(alpha  = 0.5) +
-  scale_y_continuous(limits = vl_lims, breaks = 1:7) +
-  labs(color = "", x = "Days post first positive", y = "Peak log10VL") +
-  facet_wrap(~protocol, nrow = 2)
-
-```
-
-```{r vl-time-nadir}
-
-kinetics_summary %>%
-  dplyr::filter(endpoint == "nadir") %>%
-  ggplot(aes(x = days_fp, y = log10VL, colour = rx_lab)) +
-  geom_point(alpha  = 0.5) +
-  scale_y_continuous(limits = vl_lims, breaks = 1:7) +
-  labs(color = "", x = "Days post first positive", y = "Nadir log10VL") +
-  facet_wrap(~protocol, nrow = 2)
-
-```
-
-### Kinetic Summary
-
-```{r kinetics-bp}
-
- bquote("IC80 >= 1 mcg/mL")
-
-kinetics_summary %>%
-  mutate(rx_lab2 = str_replace(rx_lab, " ", "\n"),
-         ic80_cat = factor(if_else(gmt80ls < 1, 0, 1),
-                           levels = 0:1,
-                           labels = c(expression(paste("IC80 < 1 mcg/mL")), 
-                                      expression(paste("IC80" >= "1 mcg/mL"))))
-         )  %>%
-  ggplot(aes(x = rx_lab2, y = log10VL, colour = rx_lab2)) +
-  geom_boxplot(width = 0.3) +
-  scale_y_continuous(breaks = 2:7) +
-  geom_point()+
-  facet_grid(cols = vars(ic80_cat), rows = vars(endpoint_plot), switch = "y", labeller = labeller(ic80_cat = label_parsed)) +
-  labs(y = vl_title, x = "") +
-  theme(strip.placement = "outside", strip.background = element_blank(),
-        legend.position = "none",
-        axis.text.x = element_text(size = 9)) 
-
-```
-
-### Neutralization summary
-
-The IC50 and IC80 data is very well correlated within isolate class (most frequent, most sensitive, least sensitive). And generally in agreement in resistance category. Two outliers standout because the IC80 suggests resistance while the IC50 suggests none.
-
-Using an orthogonal regression, the IC50 and IC80 data track well together. The intercept of 3.3-fold shift between IC50 and IC80 suggest that the IC50 and IC80 are closer together than a Hill-slope of 1 (which would correspond to 4-fold change). The slope of 1 (if IC50 goes up x-fold, then IC80 goes up x-fold) implies that the hill slope is conserved over the range of sensitive viruses in these data. 
-
-```{r}
-
-denning_reg = function(formula, dat){
-  pca <- prcomp(formula, dat)
-  tibble(slp = with(pca, rotation[2,1] / rotation[1,1]),
-         int = with(pca, center[2] - slp*center[1])
-  )
-}
-
-pls = map(c("ms", "mf", "ls"), function(i){
-  tmp_dat = neut_data_long %>%
-    dplyr::filter(isolate == i & gmt80 < 100) %>%
-    mutate(log10gmt50 = log10(gmt50), log10gmt80 = log10(gmt80))
-  
-  den_lm = denning_reg(~log10gmt50 + log10gmt80, tmp_dat)
-  
-  ggplot(data = tmp_dat, aes(x = log10gmt50, y = log10gmt80)) + 
-    annotate("rect", xmin = -Inf, xmax = Inf, ymin = log10(3), ymax = Inf, fill = "red", alpha = 0.5) +
-    annotate("rect", xmin = log10(3/3.33), xmax = Inf, ymin = -Inf, ymax = Inf, fill = "red", alpha = 0.5) +
-    annotate("rect", xmin = -Inf, xmax = log10(1/3.33), ymin = -Inf, ymax = log10(1), fill = "blue", alpha = 0.5) +
-    #geom_smooth(method = "lm", se=FALSE, color="black", formula = y ~ x) +  
-    geom_point() +
-    geom_abline(slope=den_lm$slp, intercept=den_lm$int, color="blue") +
-    annotate("text", x = -0.5, y = 1.75, label = paste0('slp=', round(den_lm$slp,2),
-                                                      "; ratio=", round(10^den_lm$int,2))) +
-    geom_hline(yintercept = log10(c(1, 3)), linetype = "dashed") +
-    ggtitle(i) #+
-    #annotate("text", x = 1, y = 200, label = linear(lm(fo, tmp_dat)), 
-    #                      colour="black", size = 3, parse=TRUE)
-  
-})
-
-plot_grid(plotlist = pls)
- 
-```
-
-```{r}
-
-
-vl_data_analysis %>%
-  dplyr::select(contains("gmt"), nisolates) %>%
-  dplyr::filter(nisolates > 1) %>%
-  ggpairs(columns = 1:6, mapping = ggplot2::aes(colour=factor(nisolates)))
-  
-  
-```
-
-
-## Supplementary figures
-
-```{r vl-scatter-cens}
-
-vl_data_analysis %>%
-  dplyr::filter(pub_id %in% censored_pub) %>%
-  ggplot(aes(x = days_fp, y = log10VL, group = pub_id, colour = rx_lab)) +
-  geom_line(alpha = 0.5) +
-  geom_point(alpha  = 0.5) +
-  scale_y_continuous(limits = vl_lims, breaks = 1:7) +
-  facet_wrap(~protocol, nrow = 2)
-
-```
-
-```{r kinetics-protocol-bp}
-
-kinetics_summary %>%
-  mutate(rx_lab2 = str_replace(rx_lab, " ", "\n")) %>%
-  ggplot(aes(x = rx_lab2, y = log10VL, colour = rx_lab2)) +
-  geom_boxplot(width = 0.3) +
-  scale_y_continuous(breaks = 2:7) +
-  geom_point()+
-  facet_grid(cols = vars(protocol), rows = vars(endpoint_plot), switch = "y") +
-  labs(y = vl_title, x = "") +
-  theme(strip.placement = "outside", strip.background = element_blank(),
-        legend.position = "none",
-        axis.text.x = element_text(size = 9)) 
-
-```
-

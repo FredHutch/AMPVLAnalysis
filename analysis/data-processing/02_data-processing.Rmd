@@ -35,7 +35,7 @@ rx_lab = tibble(
 
 shared_drive = dir.exists("/Volumes/trials/")
 
-save_shared_folder = F
+save_shared_folder = T
 if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
 
 if(!dir.exists(here("output/data-processing"))) dir.create(here("output/data-processing"))
@@ -609,6 +609,10 @@ time_analysis %>%
 
 
 ```{r save-shared, eval = save_shared_folder}
+
+write_csv(tibble(), 
+           paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!DATA UPDATED - ",
+                  Sys.Date()))
 
 write_csv(dplyr::select(vl_data_analysis, -flag, -has_neut_data, -infection_pre85wks, -rx),
                          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/adata-viral-loads.csv")
