@@ -22,7 +22,11 @@ library(drtmle)
 #library(nloptr)
 library(janitor)
 library(cowplot)
+library(knitr)
 theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
+
+opts_chunk$set(dev = c("png", "pdf"))
+
 
 source(here("R", "directory-funs.R"))
 source(here("R", "vl-regression-funs.R"))
@@ -115,30 +119,6 @@ See methods-discussion.md
 
 # First positive analysis
 
-```{r, eval = F}
-
-first_positive %>%
-  tabyl(rx_lab, rx_code) %>%
-  kable() %>%
-  kable_styling(full_width= F)
-
-first_positive %>%
-  tabyl(rx_pool, rx_pool_code) %>%
-  kable() %>%
-  kable_styling(full_width= F)
-
-first_positive %>%
-  tabyl(trt_ic80, trt_ic80_code) %>%
-  kable() %>%
-  kable_styling(full_width= F)
-
-first_positive %>%
-  tabyl(trt_ic80_pool, trt_ic80_pool_code) %>%
-  kable() %>%
-  kable_styling(full_width= F)
-
-```
-
 ```{r box-fp-by-protocol}
 
 ggplot(first_positive, aes(x = protocol, y = log10vl)) +
@@ -174,7 +154,36 @@ fp_models = lst(trt_grp_fp, trt_grp_pool_fp, trt_ic80_fp, trt_ic80_pool_fp)
 
 ## Mean Viral loads
 
-```{r mm-table}
+```{r fp-mm-table-pool}
+
+trt_ic80_pool_fp[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
+  select(`Group` = trt_var, `Mean First Positive (95pct CI)` = mean_ci) %>%
+  write_csv("fp-pool-means.csv") %>%
+  kable(caption = "Marginal means for first RNA+ log$_{10}$ viral load. Esimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r fp-mm-fig-pool}
+
+trt_ic80_pool_fp[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(
+    x = trt_var,
+    y = est,
+    ymin = cil,
+    ymax = ciu
+  )) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
+  scale_y_continuous(limits = c(2.5, 6.25)) +
+  coord_flip()
+
+```
+
+```{r fp-mm-table}
 
 map2_df(fp_models, names(fp_models), ~ (
   .x[['mm']] %>%
@@ -192,7 +201,7 @@ map2_df(fp_models, names(fp_models), ~ (
 
 ```
 
-```{r mm-plots}
+```{r fp-mm-plots}
 
 fp_mm_pls = map(fp_models, ~(
   .[['mm']] %>%
@@ -210,7 +219,38 @@ plot_grid(plotlist = fp_mm_pls)
 
 ## Group comparisons
 
-```{r comp-table}
+```{r fp-comp-pool-table}
+
+trt_ic80_pool_fp[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      p.value = pretty_pvalues(p.value)
+  ) %>%
+  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  write_csv("fp-pool-comp.csv") %>%
+  kable(caption = "Differences in first RNA+ log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r fp-comp-pool-figure}
+
+trt_ic80_pool_fp[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
+    coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r fp-comp-table}
 
 map2_df(fp_models, names(fp_models), ~ (
   .x[['contrast']] %>%
@@ -225,7 +265,7 @@ map2_df(fp_models, names(fp_models), ~ (
     trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
   ) %>%
   select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
-  kable(caption = "Differences in first RNA+ log$_{10}$ viral load. Esimates adjusted for protocol/region.", 
+  kable(caption = "Differences in first RNA+ log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
         format = "html",
         digits = 3) %>%
   kable_styling(full_width = F) %>%
@@ -233,7 +273,7 @@ map2_df(fp_models, names(fp_models), ~ (
 
 ```
 
-```{r contrast-plots, fig.height = 11}
+```{r fp-comp-plots, fig.height = 11}
 
 fp_contrast_pls = map(fp_models, ~(
   .[['contrast']] %>%
@@ -267,28 +307,27 @@ vl_data %>%
 
 ```
 
-### All groups (trt x viral sensitivity)
+# Appendix
 
-```{r fp-drtmle, eval = F}
+```{r drtmle-data-setup, eval = final_model!="lm"}
 
-fp_full_res = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map)
+first_positive %>%
+  tabyl(rx_lab, rx_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 
-emmeans(mod_fp_interaction, ~ trt_ic80) %>%
-  as_tibble() %>%
-  rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
-  mutate(model = "LM") %>%
-  ggplot(aes(x = trt_ic80, y = est, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  labs(y = "Mean first positive log10 viral load (95% CI)", x = "VRC01 Groups") +
-  coord_flip()
+first_positive %>%
+  tabyl(rx_pool, rx_pool_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 
-emmeans(mod_fp_interaction, pairwise ~ trt_ic80, adjust = "none")$contrasts %>%
-  as_tibble() %>%
-  mutate(cil = estimate - qt(0.975, df = df) * t.ratio, ciu = estimate + qt(0.975, df = df) * t.ratio) %>%
-  ggplot(aes(x = contrast, y = estimate, ymin = cil, ymax = ciu)) +
-  geom_pointrange(position = position_dodge(width = 0.5)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-  labs(y = "Difference first positive log10 viral load (95% CI)", x = "") +
-  coord_flip()
+first_positive %>%
+  tabyl(trt_ic80, trt_ic80_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 
+first_positive %>%
+  tabyl(trt_ic80_pool, trt_ic80_pool_code) %>%
+  kable() %>%
+  kable_styling(full_width= F)
 ```
