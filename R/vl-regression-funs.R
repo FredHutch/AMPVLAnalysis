@@ -18,7 +18,7 @@
 
 run_vl_lm = function(mdata, formula, lm_trt_var){
   
-  mod_fit = lm(formula, data = first_positive)
+  mod_fit = lm(formula, data = mdata)
   mm = emmeans(mod_fit, as.formula(paste("~", lm_trt_var))) %>%
     as_tibble() %>%
     rename(est = emmean,  cil =  lower.CL,  ciu = upper.CL) %>%
@@ -111,7 +111,7 @@ run_vl_drtmle_glm = function(mdata, A_var,
     if(run_lm){
       lm_trt_var = names(trt_map)[1]
       lm_formula = as.formula(paste("log10vl ~ isSA703 + isNSA703 + isSwiss704 +", lm_trt_var))
-      lm_output = run_vl_lm(mdata = first_positive,
+      lm_output = run_vl_lm(mdata = mdata,
                             formula = lm_formula, 
                             lm_trt_var = lm_trt_var)
       drtmle_mm = bind_rows(drtmle_mm, lm_output[['mm']])
