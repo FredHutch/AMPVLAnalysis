@@ -1,0 +1,434 @@
+---
+title: "PK, Neutralization, and VL - Descriptive analysis"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This is archived code at the moment. Dan is doing most of this analysis right now. This is unlikely to run without editing.
+
+Some of the code relies on VL models that are obsolete/non-existent.
+
+# PKPD primer work
+
+## Infection time titer and concentration
+
+```{r conc-setup}
+#need simulated PK data with neut merged on
+concentration_data = sim_pk_dat_neut %>%
+  dplyr::filter(days_enrollment <= tpf_day & days_enrollment > 7) %>%
+  gather(key = "compartment", value = "concentration", centr_conc, peri_conc) %>%
+  group_by(pub_id, compartment, vars(contains("gmt"))) %>%
+  summarize(
+    trough = min(concentration),
+    infection_time = concentration[days_enrollment == tpf_day],
+    mean = mean(concentration),
+    peak = max(concentration),
+    `.groups` = "drop"
+  ) 
+
+trt_titer = concentration_data %>%
+  gather("time", "concentration", trough, infection_time, mean, peak, factor_key = T) %>%
+  left_join(raw_neut, by = "pub_id") %>%
+  gather("name", "IC", gmt50ms, gmt50ls, gmt50mf, gmt80ms, gmt80ls, gmt80mf) %>%
+  mutate(
+    cat = if_else(str_detect(name, "50"), "ID50", "ID80"),
+    cat2 = if_else(str_detect(name, "50"), "IC50", "IC80"),
+    titer = pmax(0.01, pred_conc)/IC) 
+```
+
+
+
+```{r pred-vs-obs}
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(times <= infection_day) %>%
+  group_by(pub_id) %>%
+  summarize(
+    max_pred = max(pred_conc, na.rm = T),
+    max_obs = max(obs_conc, na.rm = T)
+  ) %>%
+  ggplot(aes(x = max_pred, y = max_obs)) +
+  geom_point() +
+  labs(x = "Max prediction [VRC01]", y = "Max observed [VRC01]") +
+  geom_abline()
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(times <= infection_day) %>%
+  group_by(pub_id) %>%
+  summarize(
+    min_pred = min(pred_conc, na.rm = T),
+    min_obs = min(obs_conc, na.rm = T)
+  ) %>%
+  ggplot(aes(x = min_pred, y = min_obs)) +
+  geom_point() +
+  labs(x = "Min prediction [VRC01]", y = "Min observed [VRC01]") +
+  geom_abline() 
+
+```
+
+```{r pred-concentration}
+
+concentration_data %>%
+  gather("time", "pred_conc", trough, infection_time, mean, peak, factor_key = T) %>%
+  ggplot(aes(x = time, y = pmax(pred_conc, 0.01), colour = time)) +
+  geom_boxplot() +
+  geom_line(aes(group = interaction(pub_id)), alpha = 0.25, colour = "gray") +
+  scale_y_log10() +
+  geom_point() +
+  labs(y = "Predicted concentrations up to infection", x = "") 
+
+```
+
+```{r conc-ic50}
+
+trt_titer %>%
+  dplyr::filter(time == "infection_time") %>%
+  ggplot(aes(x = pmax(pred_conc, 0.01), y = pmax(IC, 0.01))) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_abline(intercept = c(-1), linetype = 2) +
+  geom_abline(intercept = c(-2), linetype = 2, colour = "red") +
+  labs(y = "ICxx", x = "Pred. [VRC01] at infection") +
+  annotate("text", x = 12, y = 12 / 100, label = "titer = 100", angle = 45, vjust = 1, colour = "red") +
+  annotate("text", x = 1.2, y = 1.2 / 10, label = "titer = 10", angle = 45, vjust = 1) +
+  annotate("text", x = 0.1, y = 0.1, label = "titer = 1", angle = 45, vjust = 1) +
+  facet_wrap(~ name + cat2, nrow = 2, scales="free_x") 
+
+```
+
+
+```{r pred-titers, width = 9}
+
+trt_titer %>%
+  ggplot(aes(x = time, y = log10(titer), colour = time)) +
+  geom_boxplot() +
+  geom_line(aes(group = interaction(pub_id, cat, name)), alpha = 0.25, colour = "gray") +
+  geom_point() +
+  labs(y = "Predicted log10 titer up to infection", x = "") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
+  theme(axis.text.x = element_text(size = 8))
+
+```
+
+## Predicted placebo titers 
+
+Concentration data distributions come from the treatment population (see above). We consider two pre-infection concentration distributions below: predicted concentrations at time of infection and mean concentrations across participants.
+
+To determine "placebo" titers, we use a "bootstrap" procedure. For each placebo ptid, we use their individual IC50 and IC80s to determine two measures of titer. The first is the distribution of titers calculated over the distribution of predicted concentrations at time of infection in the treatment population (Infection titer). The second is the distribution of titers calculated over the distribution of mean concentrations (prior to infection) in the treatment population (Mean titer). For each participant, these distributions are summarized by their range and their median.
+
+This procedure is repeated on the treatment population (Bootstrap treatment). Specifically, we de-couple the PK data from the given participant as an assessment of the method, and then compare that to the actual titer calculations with the paired PK data (Actual treatment).
+
+
+```{r placebo-setup}
+
+neut_data = raw_neut %>% mutate(trt = pub_id %in% concentration_data$pub_id)
+#placebo_neuts = dplyr::filter(neut_data, !trt)
+
+bootstrap_titer = 
+  map_df(unique(trt_titer$time), function(i){
+    map_df(unique(neut_data$pub_id), function(j){
+
+      neut_data %>%
+        dplyr::select(-contains("cat")) %>%
+        dplyr::filter(pub_id == j) %>% 
+        gather("name", "value", gmt50ms, gmt50ls, gmt50mf, gmt80ms, gmt80ls, gmt80mf) %>%
+        mutate(
+          time = i,
+          cat = if_else(str_detect(name, "50"), "ID50", "ID80"),
+          min_titer = min(concentration_data[[i]]) / value,
+          mean_titer = mean(concentration_data[[i]]) / value,
+          median_titer = median(concentration_data[[i]]) / value,
+          max_titer = max(concentration_data[[i]]) / value
+        )
+    })
+})
+
+```
+
+
+### Range of bootstrap titer calculations in placebo
+
+These plots are complicated.
+
+```{r}
+
+bootstrap_titer %>%
+  dplyr::filter(!trt & time == "infection_time") %>%
+  ggplot(aes(x = pub_id, y = median_titer, ymin = median_titer, ymax = max_titer)) +
+  geom_pointrange() +
+  coord_flip() +
+  scale_y_log10("'bootstrap' median infection titer through max titer") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
+  labs(x = "Placebo participants") +
+  theme(axis.text.y = element_blank())
+
+
+```
+
+```{r}
+
+bootstrap_titer %>%
+  dplyr::filter(!trt & time == "mean") %>%
+  ggplot(aes(x = pub_id, y = median_titer, ymin = median_titer, ymax = max_titer)) +
+  geom_pointrange() +
+  coord_flip() +
+  scale_y_log10("'bootstrap' median mean titer through max titer") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
+  labs(x = "Placebo participants") +
+  theme(axis.text.y = element_blank())
+
+
+```
+
+
+
+### Predicted placebo titers vs. treatment
+
+
+```{r placebo-trt-inf-titer}
+
+trt_titer %>%
+  rename(median_titer = titer) %>%
+  mutate(trt = 2) %>%
+  bind_rows(bootstrap_titer) %>%
+  dplyr::filter(time == "infection_time") %>%
+  mutate(
+    grp = factor(trt, levels = 0:2,
+                 labels = c("Bootstrap\nplacebo",
+                            "Bootstrap\ntreatment",
+                            "Actual\ntreatment")
+    )
+  ) %>%
+  ggplot(aes(x = grp, y = median_titer)) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_line(aes(group = interaction(pub_id, name, cat)), alpha = 0.25) +
+  scale_y_log10("Infection titer (bootstrap median)") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
+
+
+```
+
+```{r placebo-trt-inf-titer-dens, eval = F}
+
+trt_titer %>%
+  rename(median_titer = titer) %>%
+  mutate(trt = 2) %>%
+  bind_rows(bootstrap_titer) %>%
+  dplyr::filter(time == "infection_time") %>%
+  mutate(
+    grp = factor(trt, levels = 0:2,
+                 labels = c("Bootstrap\nplacebo",
+                            "Bootstrap\ntreatment",
+                            "Actual\ntreatment")
+    )
+  ) %>%
+  ggplot(aes(x = median_titer, colour = grp)) +
+  geom_density(bw = 0.5) +
+  scale_x_log10("Infection titer (bootstrap median)") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
+
+
+```
+
+```{r placebo-trt-mean-titer}
+
+trt_titer %>%
+  rename(median_titer = titer) %>%
+  mutate(trt = 2) %>%
+  bind_rows(bootstrap_titer) %>%
+  dplyr::filter(time == "mean") %>%
+  mutate(
+    grp = factor(trt, levels = 0:2,
+                 labels = c("Bootstrap\nplacebo",
+                            "Bootstrap\ntreatment",
+                            "Actual\ntreatment")
+    )
+  ) %>%
+  ggplot(aes(x = grp, y = median_titer)) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_line(aes(group = interaction(pub_id, name, cat)), alpha = 0.25) +
+  scale_y_log10("Mean titer (bootstrap median)") +
+  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
+
+
+```
+
+## Concentration vs. viral load
+
+```{r vl-pk-ic50, fig.width=10, fig.height=10, warning =F}
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(infected & times > infection_day) %>%
+  left_join(raw_neut, by = "pub_id") %>%
+  gather("name", "value", gmt50mscat, gmt50lscat, gmt50mfcat) %>%
+  mutate(value = factor(value, levels = neut_cat_order)) %>%
+  ggplot(aes(x = log10(pmax(0.01, pred_conc)), y = log10(vl_num))) +
+  geom_point() +
+  geom_smooth(formula = 'y ~ x', method = "lm") +
+  labs(x = "Predicted log10 concentration (post-infection)", y = "Log10 VL (post-infection)") +
+  ggtitle("VRC01 vs VL by IC50 cats") +
+  facet_grid(name ~ value)
+
+```
+
+```{r vl-pk-ic80,fig.width=10, fig.height=10, warning =F}
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(infected & times > infection_day) %>%
+  left_join(raw_neut, by = "pub_id") %>%
+  gather("name", "value", gmt80mscat, gmt80lscat, gmt80mfcat) %>%
+  mutate(value = factor(value, levels = neut_cat_order)) %>%
+  ggplot(aes(x = log10(pmax(0.01, pred_conc)), y = log10(vl_num))) +
+  labs(x = "Predicted log10 concentration", y = "Log10 VL (post-infection)") +
+  geom_point() +
+  geom_smooth(formula = 'y ~ x', method = "lm") +
+  ggtitle("VRC01 vs VL by IC80 cats") +
+  facet_grid(name ~ value)
+
+```
+
+## Titer vs. viral load
+
+```{r vl-titer-ic50, fig.width=10, fig.height=10, warning =F}
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(infected & times > infection_day) %>%
+  left_join(raw_neut, by = "pub_id") %>%
+  gather("name", "value", gmt50ms, gmt50ls, gmt50mf) %>%
+  mutate(titer = pmax(0.01, pred_conc)/value) %>%
+  ggplot(aes(x = log10(titer), y = log10(vl_num))) +
+  geom_point() +
+  geom_smooth(formula = 'y ~ x', method = "loess") +
+  labs(x = "Predicted log10 ID50 titer", y = "Log10 VL (post-infection)") +
+  ggtitle("ID50 titer vs VL") +
+  facet_grid(name ~ .)
+
+```
+
+```{r vl-titer-ic80, fig.width=10, fig.height=10, warning =F}
+
+read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
+  dplyr::filter(infected & times > infection_day) %>%
+  left_join(raw_neut, by = "pub_id") %>%
+  gather("name", "value", gmt80ms, gmt80ls, gmt80mf) %>%
+  mutate(titer = pmax(0.01, pred_conc)/value) %>%
+  ggplot(aes(x = log10(titer), y = log10(vl_num))) +
+  geom_point() +
+  geom_smooth(formula = 'y ~ x', method = "loess") +
+  labs(x = "Predicted log10 ID80 titer", y = "Log10 VL (post-infection)") +
+  ggtitle("ID80 titer vs VL") +
+  facet_grid(name ~ .)
+
+```
+
+##  Titer vs. viral load parms
+
+```{r, include = F}
+
+
+titer_tcl_pmx = pmx_mlx(
+  config = "standing",
+  directory = mlx_model_here("viralload/placebo-models/trt-tcl-parms"),
+  input = mlx_data_here("amp-dosevl-trt-CAT.csv"),
+  id = "pub_id",
+  dv = "DV",
+  cats = neut_cats,
+  conts = neut_covs,
+  settings = pmx_settings(is.draft = FALSE)
+)
+
+```
+
+```{r, fig.width=10, fig.height=10, warning =F}
+pmx_plot_eta_conts(titer_tcl_pmx, scale_x_log10 = T,  
+                   smooth = list(formula = "y ~ x"),
+                   correl = list(size = 3, colour = "red"), labels = list(title = "Trt TCL"))
+```
+
+```{r, fig.width=10, fig.height=10, warning =F}
+
+pmx_plot_eta_cats(titer_tcl_pmx, labels = list(title = "Trt TCL")) + 
+   scale_x_discrete(limits = neut_cat_order) +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+
+```{r visc-pk-method, eval = F}
+library(VISCPK)
+test_pub_id = "704-0662"
+
+calc_conc = map_df("704-0662", function(pid){
+  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
+  #browser()
+  times = c(subset(indiv_preds, pub_id == pid)$time, vl_time_grid, vl_times$tpf_day)
+  ipred = c(subset(indiv_preds, pub_id == pid)$indivPredMode, rep(NA_real_, length(vl_time_grid)+1))
+  obs = c(subset(indiv_preds, pub_id == pid)$DV, rep(NA_real_, length(vl_time_grid)+1))
+  infusion_times = subset(test_dose, pub_id == pid)$TIME
+  infusion_doses = subset(test_dose, pub_id == pid)$AMT
+  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
+   
+  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
+    
+  tibble(
+    pub_id = pid,
+    times = times,
+    infection_day = vl_times$tpf_day,
+    infected = if_else(times %in% vl_time_grid, T, F),
+    obs_conc = obs,
+    ipred = ipred,
+    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
+                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
+  )
+                    
+  
+  })
+
+
+calc_conc2 = map_df("704-0662", function(pid){
+  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
+  #browser()
+  times = c(subset(indiv_fits, pub_id == pid)$time, vl_time_grid)
+  infusion_times = subset(test_dose, pub_id == pid)$TIME
+  infusion_doses = subset(test_dose, pub_id == pid)$AMT
+  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
+   
+  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
+    
+  tibble(
+    pub_id = pid,
+    times = times,
+    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
+                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
+  )
+                    
+  
+  })
+
+calc_conc3 = map_df("704-0662", function(pid){
+  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
+  #browser()
+  times = seq(0, max(vl_time_grid), by = 1)
+  infusion_times = subset(test_dose, pub_id == pid)$TIME
+  infusion_doses = subset(test_dose, pub_id == pid)$AMT
+  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
+   
+  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
+    
+  tibble(
+    pub_id = pid,
+    times = times,
+    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
+                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
+  )
+                    
+  
+  })
+
+```
+

@@ -15,7 +15,7 @@ For participants without concentration data (there are 15), use the population-l
 
 # Refit PK
 
-```{r load-packages, echo = T, message=F,output=F}
+```{r load-packages, echo = T, message=F,output=F,warning=F}
 knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(tidyverse)
@@ -113,7 +113,7 @@ Need to use pop ests for ptids without concentration data
 
 pop_ests = get_pop_ests(pk_dir_tag("VRC01AMP_Case-Cntrl"))
 
-pop_wide = spread(dplyr::select(pop_ests, -se_sa, -rse_sa),  key = parameter, value = value, drop = T)
+pop_wide = spread(dplyr::select(pop_ests, -se_sa, -rse_sa),  key = parameter, value = value)
 
 indiv_parms_no_followup = pk_data_analysis %>%
   dplyr::filter(no_followup) %>%
@@ -156,3 +156,5 @@ stopifnot(n_distinct(missing_ptids_fits) == 15)
 write_csv(indiv_parms_mode, here("output/pk-modeling", "pk-mode-parms.csv"))
 
 ```
+
+Confirmed separately that these fitted parameter results are equivalent across computers.
