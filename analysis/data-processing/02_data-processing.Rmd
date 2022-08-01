@@ -35,7 +35,7 @@ rx_lab = tibble(
 
 shared_drive = dir.exists("/Volumes/trials/")
 
-save_shared_folder = T
+save_shared_folder = F
 if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
 
 if(!dir.exists(here("output/data-processing"))) dir.create(here("output/data-processing"))
@@ -540,13 +540,17 @@ neut_merge = dplyr::select(neut_data, -contains("cat"))
 vl_data_analysis_full = vl_data_unblind %>%
   dplyr::filter(on_art == 0 & has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
-  mutate(log10vl = log10(vl), rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))  
+  mutate(log10vl = log10(vl), 
+        vl_model_flag = !pub_id %in% low_sample_ptids, 
+        rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))  
 
 n_distinct(vl_data_analysis_full$pub_id)
 stopifnot(n_distinct(vl_data_analysis_full$pub_id) == 162)
 
+stats_ptids = unique(vl_data_analysis_full$pub_id) 
+
 vl_data_analysis = vl_data_analysis_full %>%
-  dplyr::filter(!pub_id %in% low_sample_ptids)
+  dplyr::filter(vl_model_flag)
 
 n_distinct(vl_data_analysis$pub_id)
 stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
@@ -554,15 +558,22 @@ stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
 pk_data_analysis = pk_data_stem %>% 
   dplyr::filter(!pub_id %in% low_sample_ptids & has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
-  mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat))
+  mutate(
+    stats_flag = pub_id %in% stats_ptids,
+    vl_model_flag = !pub_id %in% low_sample_ptids, 
+    rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat)
+    )
 
 n_distinct(pk_data_analysis$pub_id)
 stopifnot(n_distinct(pk_data_analysis$pub_id) == 96)
+n_distinct(subset(pk_data_analysis, stats_flag)$pub_id)
+n_distinct(subset(pk_data_analysis, vl_model_flag)$pub_id)
 
 time_analysis = time_summary_full %>%
   dplyr::filter(has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
   mutate(
+    stats_flag = pub_id %in% stats_ptids,
     rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat),
     vl_model_flag = !pub_id %in% low_sample_ptids
     )
@@ -570,7 +581,7 @@ time_analysis = time_summary_full %>%
 n_distinct(time_analysis$pub_id)
 stopifnot(n_distinct(time_analysis$pub_id) == 162)
 stopifnot(all(!is.na(time_analysis$final_infusion_day)))
-
+stopifnot(n_distinct(subset(time_analysis, stats_flag)$pub_id) == 162)
 stopifnot(n_distinct(subset(time_analysis, vl_model_flag)$pub_id) == 158)
 
 ```

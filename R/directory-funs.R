@@ -32,7 +32,7 @@ check_data = function(file = NULL){
 }
 
 mlx_model_here <- function(file = "", mlxtran = F) {
-  if(mlxtran) project_name = glue("{file}.mlxtran")
+  if(mlxtran) file = glue("{file}.mlxtran")
   here("models", file)
 }
 

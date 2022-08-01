@@ -18,12 +18,10 @@ library(GGally)
 library(cowplot)
 library(emmeans)
 library(drtmle)
-#library(SuperLearner)
-#library(nloptr)
 library(janitor)
 library(cowplot)
 library(knitr)
-theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank()))
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank(), panel.grid.major = element_blank()))
 
 opts_chunk$set(dev = c("png", "pdf"))
 
@@ -47,6 +45,9 @@ rx_labeller = tibble(
 )
 
 final_model = 'lm'
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+protocol_colors = c(`HVTN 703/HPTN 085` = "magenta", `HVTN 704/HPTN 081` = "purple")
 
 ```
 
@@ -86,6 +87,7 @@ trt_pool_map = tribble(
 
 vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>%
   mutate(
+    protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 085", "HVTN 704/HPTN 081"),
     ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
     rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
     rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)"),
@@ -98,6 +100,12 @@ vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>
   left_join(rx_map, by = "rx_lab") %>%
   left_join(rx_pool_map, by = "rx_pool")  
 
+demo_dat = distinct(vl_data, pub_id, trt_ic80, ic80gte1, protocol_full, rx_lab, rx_pool)
+
+dan_summary = read_csv(here("output/other", "dan-calc-allmetrics.csv")) %>%
+  janitor::clean_names() %>%
+  left_join(demo_dat, by = c("pid" = "pub_id"))
+
 # this would signify a data change
 stopifnot(nrow(vl_data) == 880)
 stopifnot(all(!is.na(select(vl_data, -artstartdt))))
@@ -105,11 +113,52 @@ stopifnot(all(!is.na(select(vl_data, -artstartdt))))
 first_positive = vl_data %>% 
   dplyr::filter(days_fp == 0) %>%
   mutate(
+    metric = "first_positive",
+    metric_title = "First positive log10 VL",
     isSA703 = study_region_code == 1,
     isNSA703 = study_region_code == 2,
     isSwiss704 = study_region_code == 3
   ) %>%
   arrange(trt_ic80_code)
+
+avg_vl = vl_data %>% 
+  dplyr::filter(days_fp >= 0) %>%
+  group_by(across(c(pub_id, ic80gte1, protocol_full, contains("trt_"), contains("rx_"), study_region_code))) %>%
+  summarize(
+    log10vl = mean(log10vl),
+    metric = "geomean_vl",
+    metric_title = "Mean log10 VL",
+    .groups = "drop"
+  ) %>%
+  arrange(trt_ic80_code) %>%
+  mutate(isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3)
+
+
+set_point = vl_data %>% 
+  dplyr::filter(days_fp >= 0) %>%
+  group_by(pub_id) %>%
+  mutate(
+    peak_day = days_fp[which.max(log10vl)]
+  ) %>%
+  ungroup() %>%
+  dplyr::filter(days_fp > peak_day) %>%
+  group_by(across(c(pub_id, ic80gte1, protocol_full, peak_day, contains("trt_"), contains("rx_"), study_region_code))) %>%
+  summarize(
+    measurements = n(),
+    set_pt_lloq = sum(cens > 0),
+    log10vl = mean(log10vl),
+    metric = "set_point",
+    metric_title = "Set point log10 VL",
+    `.groups` = "drop"
+  ) %>%
+  arrange(trt_ic80_code) %>%
+  mutate(isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3)
+
+stopifnot(nrow(set_point) == 134)
 
 ```
 
@@ -117,9 +166,86 @@ first_positive = vl_data %>%
 
 See methods-discussion.md
 
+```{r sample-sizes}
+
+acquisitions = first_positive %>% 
+  group_by(rx_lab, ic80gte1) %>%
+  summarize(Acquisitions = n(), .groups = "drop")
+
+set_point %>%
+  dplyr::filter(set_pt_lloq != measurements) %>%
+  mutate(measure_trunc = if_else(measurements < 4, as.character(measurements), "4+")) %>%
+  group_by(rx_lab, ic80gte1, measure_trunc) %>%
+  summarize(N = n(), .groups = "drop") %>%
+  spread(measure_trunc, N, fill = 0) %>%
+  janitor::adorn_totals(where = "col", name = "N") %>%
+  left_join(acquisitions, by = c("rx_lab", "ic80gte1")) %>%
+  janitor::adorn_totals(where = "row", name = "Overall") %>%
+  rename(`Grp` = rx_lab, `Sensitivity` = ic80gte1) %>%
+  kable() %>%
+  kable_styling(full_width = F) %>%
+  add_header_above(c(' ' = 2, 'Total meas. in setpoint' = 4, ' ' = 2))
+
+```
+
+```{r vl-protocol-paper}
+
+set_point %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  ggplot(aes(x = protocol_full, y = log10vl, colour = protocol_full)) +
+  geom_boxplot() +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ ., switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = protocol_colors, guide = "none")
+
+```
+
+```{r vl-vl-allgrp--paper, fig.height = 9}
+
+set_point %>%
+  mutate(metric_title = "Obs. set point log10 VL") %>%
+  bind_rows(avg_vl) %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  bind_rows(mutate(dan_summary, log10vl = model_set_pt, 
+                   metric_title = "Model set point log10 VL")) %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+  geom_boxplot() +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ rx_lab, switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = ic80gte1_colors, guide = "none")
+
+```
+
+```{r vl-paper}
+
+avg_vl %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  bind_rows(mutate(dan_summary, log10vl = model_set_pt, 
+                   metric_title = "Model set point log10 VL")) %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+  geom_boxplot(width = 0.45) +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ rx_pool, switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text()) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = ic80gte1_colors, guide = "none")
+
+```
+
 # First positive analysis
 
 ```{r box-fp-by-protocol}
+
 
 ggplot(first_positive, aes(x = protocol, y = log10vl)) +
   geom_boxplot() +
@@ -141,8 +267,19 @@ ggplot(first_positive, aes(x = study_region_cat, y = log10vl)) +
 
 ```
 
+```{r box-fp-pool}
 
-```{r run-models}
+ggplot(first_positive, aes(x = ic80gte1, y = log10vl)) +
+  geom_boxplot() +
+  geom_point() +
+  facet_grid(. ~ rx_lab) +
+  labs(y = "First positive log10 viral load") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+```{r fp-run-models}
 trt_grp_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "rx_code", trt_map = rx_map, run_lm = T)
 trt_grp_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "rx_pool_code", trt_map = rx_pool_map, run_lm = T)
 trt_ic80_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
@@ -152,7 +289,7 @@ fp_models = lst(trt_grp_fp, trt_grp_pool_fp, trt_ic80_fp, trt_ic80_pool_fp)
 ```
 
 
-## Mean Viral loads
+## Mean first positive viral loads
 
 ```{r fp-mm-table-pool}
 
@@ -294,18 +431,185 @@ plot_grid(plotlist = fp_contrast_pls, ncol = 1)
 
 ```{r set-point-obs}
 
-vl_data %>%
-  filter(days_fp >= 21) %>%
-  group_by(ic80gte1, protocol, rx_lab) %>%
-  summarize(
-    total_ptids = n_distinct(pub_id),
-    .groups = "drop"
-  ) %>%
-  kable(caption = "total ptids with VL measurements 21+ days after first RNA+") %>%
-  kable_styling(full_width = F)
+# set_point %>%
+#   left_join(dan_summary, by = c("pub_id" = "pid")) %>%
+#   ggplot(aes(x = log10vl, y = set_pt)) +
+#   geom_point() +
+#   geom_abline()
 
+set_point %>%
+  rename(obs_set_pt = log10vl) %>%
+  left_join(dan_summary, by = c("pub_id" = "pid")) %>%
+  ggplot(aes(x = obs_set_pt, y = model_set_pt)) +
+  geom_point() +
+  coord_equal(xlim = c(0.5, 7.1), ylim = c(0.5, 7.1)) +
+  geom_abline()
 
 ```
+
+
+```{r setup-sp-data}
+
+# pull the model based estimates
+# hacky way of keeping model variables from first positive analysis
+set_point_model = first_positive %>%
+  select(-log10vl) %>%
+  left_join(select(dan_summary, pub_id = pid, log10vl = model_set_pt), by = "pub_id") %>%
+  filter(!is.na(log10vl))
+
+stopifnot(nrow(set_point_model) == 158)
+
+```
+
+```{r sp-run-models}
+trt_grp_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "rx_code", trt_map = rx_map, run_lm = T)
+trt_grp_pool_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "rx_pool_code", trt_map = rx_pool_map, run_lm = T)
+trt_ic80_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
+trt_ic80_pool_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "trt_ic80_pool_code", trt_map = trt_pool_map, run_lm = T)
+
+setpt_models = lst(trt_grp_setpt, trt_grp_pool_setpt, trt_ic80_setpt, trt_ic80_pool_setpt)
+```
+
+
+## Mean set point VL
+
+```{r sp-mm-table-pool}
+
+trt_ic80_pool_setpt[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
+  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  write_csv("setpoint-pool-means.csv") %>%
+  kable(caption = "Marginal means for set point log$_{10}$ viral load. Esimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r sp-mm-fig-pool}
+
+trt_ic80_pool_setpt[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(
+    x = trt_var,
+    y = est,
+    ymin = cil,
+    ymax = ciu
+  )) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean set point log10 viral load (95% CI)", x = "VRC01 Groups") +
+  scale_y_continuous(limits = c(2.5, 6.25)) +
+  coord_flip()
+
+```
+
+```{r sp-mm-table}
+
+map2_df(setpt_models, names(setpt_models), ~ (
+  .x[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2), model_set = .y) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Group` = trt_var, `Mean (95pct CI)` = mean_ci) %>%
+  kable(caption = "Marginal means for set point log$_{10}$ viral load. Esimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r sp-mm-plots}
+
+setpt_mm_pls = map(setpt_models, ~(
+  .[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    labs(y = "Mean set point log10 viral load (95% CI)", x = "VRC01 Groups") +
+    scale_y_continuous(limits = c(2, 6.5)) +
+    coord_flip()
+))
+
+plot_grid(plotlist = setpt_mm_pls)
+
+```
+
+
+
+## Set point group comparisons
+
+```{r sp-comp-pool-table}
+
+trt_ic80_pool_setpt[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      p.value = pretty_pvalues(p.value)
+  ) %>%
+  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  write_csv("setpoint-pool-comp.csv") %>%
+  kable(caption = "Differences in set point log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r sp-comp-pool-figure}
+
+trt_ic80_pool_setpt[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference in set point log10 viral load (95% CI)", x = "") +
+    coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r sp-comp-table}
+
+map2_df(setpt_models, names(setpt_models), ~ (
+  .x[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  kable(caption = "Differences in set point log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r sp-comp-plots, fig.height = 11}
+
+setpt_contrast_pls = map(setpt_models, ~(
+  .[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference set point log10 viral load (95% CI)", x = "") +
+    coord_flip()
+))
+
+plot_grid(plotlist = setpt_contrast_pls, ncol = 1)
+
+```
+
 
 # Appendix
 

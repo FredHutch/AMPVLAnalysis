@@ -43,11 +43,11 @@ source(here("R", "mlx-res-processing.R"))
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 
 pk_data_nm = read_csv(mlx_data_here("pk-nm-data.csv"), col_types = cols())
-median_weight = pk_data %>% distinct(pub_id, weight) %>% summarize(median(weight)) %>% pull()
+median_weight = pk_data_nm %>% distinct(pub_id, weight) %>% summarize(median(weight)) %>% pull()
 pk_data_analysis = read_csv(clean_data_here("adata-pk.csv"), col_types = cols())
 analysis_ptids = unique(pk_data_analysis$pub_id)
 
-vl_data_analysis = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+vl_data_analysis = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
 
 neut_data = read_csv(clean_data_here("amp-neut-blinded.csv"), col_types = cols())
 
@@ -112,6 +112,11 @@ pop_ests %>% # this fixes a bug related to gpmx if i want to use it
 
 # Explore PK
 
+```{r}
+loadProject(mlx_model_here(pk_dir_tag("VRC01AMP_Case-Cntrl"), mlxtran = T))
+
+```
+
 ## Setup
 
 ```{r load-pk-res}
@@ -146,7 +151,7 @@ indiv_parms_mode = get_indiv_parms(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>%
   mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat)) %>%
   dplyr::select(-rx) %>%
   write_csv(here("output/pk-modeling", "pk-mode-parms.csv"))
- stopifnot(n_distinct(indiv_parms_saem$pub_id) == 96)
+ stopifnot(n_distinct(indiv_parms_mode$pub_id) == 96)
 
 indiv_fits = get_indiv_fits(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>% rename(pub_id = ID) %>%
   dplyr::filter(pub_id %in% analysis_ptids) 
@@ -154,9 +159,9 @@ indiv_fits = get_indiv_fits(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>% rename(pub_id
 indiv_preds = get_indiv_preds(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>% rename(pub_id = ID) %>%
   dplyr::filter(pub_id %in% analysis_ptids)
 
-# the 15 people with no concentration data of course are missing
+# the 15 people with no concentration data,  of course are missing
 
-missing_ptids_parms = setdiff(analysis_ptids, unique(indiv_parms_saem$pub_id))
+missing_ptids_parms = setdiff(analysis_ptids, unique(indiv_parms_mode$pub_id))
 n_distinct(missing_ptids_parms)
 
 missing_ptids_fits = setdiff(analysis_ptids, unique(indiv_fits$pub_id))
@@ -262,7 +267,7 @@ x = sim_pk(vl_times$final_vl_day, test_set, dose_info = test_dose,
   mutate(pub_id = test_pub_id)
 
 
-ggplot(data = x, aes(x = days/7, y = Cc)) +
+ggplot(data = x, aes(x = days_enrollment/7, y = Cc)) +
   geom_line() +
   geom_line(data = subset(indiv_fits, pub_id == test_pub_id), aes(x = time/7, y = indivPredMode), colour = "red") +
   scale_y_log10(limits = c(0.1, NA)) +
@@ -272,14 +277,14 @@ ggplot(data = x, aes(x = days/7, y = Cc)) +
 subset(indiv_preds, pub_id == test_pub_id) %>%
   dplyr::select(pub_id, time, DV, indivPredMode) %>%
   left_join(dplyr::select(indiv_fits, pub_id, time, indivPredMode), by = c("pub_id", "time")) %>%
-  left_join(dplyr::select(x, pub_id, time = days, Cc), by = c("pub_id", "time")) 
+  left_join(dplyr::select(x, pub_id, time = days_enrollment, Cc), by = c("pub_id", "time")) 
 
 ```
 
 ```{r sim-pk}
 
 
-sim_pk_dat = map_df(unique(indiv_parms_mode$pub_id), function(i){
+sim_pk_dat = map_df(unique(subset(indiv_parms_mode, !is.na(Cl))$pub_id), function(i){
   
   # relevent data
   parms = dplyr::select(subset(indiv_parms_mode, pub_id == i), Cl, V1, Q, V2)
@@ -344,7 +349,6 @@ pk_fits_ode
 
 ggsave(here("output/pk-modeling/pk_fits_ode.pdf"), pk_fits_ode, width = 12, height = 12)
 
-
 ```
 
 ## Save key output
@@ -369,6 +373,13 @@ infection_day_conc %>% group_by(pub_id) %>% summarize(total = n()) %>% filter(to
 
 ```
 
+
+```{r}
+read_csv(here("output/pk-modeling/infection-day-pkpd-x.csv")) %>%
+  dplyr::select(pub_id, centr_conc) %>%
+  full_join(select(infection_day_conc, pub_id, centr_conc), by = "pub_id") ->x
+
+```
 
 ```{r save-shared-pk, eval = save_shared_folder}
 write_csv(sim_pk_dat_neut, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/sim-pk-withVLPD.csv")
