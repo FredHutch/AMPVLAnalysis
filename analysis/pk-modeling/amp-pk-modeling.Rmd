@@ -13,6 +13,8 @@ output:
 Here, we just use Lily's case-control PK model, "refit" the model to get the individual parameters and save the fitted parameters for each individual for future simulation work.
 For participants without concentration data (there are 15), use the population-level parameters.
 
+We want the PK parameters for the 98 individuals who recieved VRC01 and acquired infection.
+
 # Refit PK
 
 ```{r load-packages, echo = T, message=F,output=F,warning=F}
@@ -46,6 +48,7 @@ pk_data_analysis = read_csv(clean_data_here("adata-pk.csv"), col_types = cols())
 # the following are for error checking
 time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols())
 analysis_ptids = unique(pk_data_analysis$pub_id)
+stopifnot(length(analysis_ptids) == 98)
 
 pk_dir_tag = function(x) paste0("PK/", x)
 pk_model_here = function(x, ...) mlx_model_here(pk_dir_tag(x), ...)
@@ -137,7 +140,7 @@ indiv_parms_mode = get_indiv_parms(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>%
   mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat)) %>%
   dplyr::select(-rx)
 
-stopifnot(n_distinct(indiv_parms_mode$pub_id) == 96)
+stopifnot(n_distinct(indiv_parms_mode$pub_id) == 98)
 stopifnot(all(!is.na(indiv_parms_mode)))
 
 missing_ptids_parms = setdiff(analysis_ptids, unique(indiv_parms_mode$pub_id))

@@ -297,6 +297,7 @@ dose_data = raw_dose_data %>%
   group_by(pub_id) %>%
   mutate(
     days_enrollment = diffdays(infusiondt, enrdt),
+    days_enrollment_dose = if_else(days_enrollment == 0, days_enrollment, days_enrollment + 0.1),
     days_fp =  diffdays(infusiondt, fpdt),
     days_dx =  diffdays(infusiondt, dxdt),
     post_dx = days_dx >= 0,
@@ -556,7 +557,7 @@ n_distinct(vl_data_analysis$pub_id)
 stopifnot(n_distinct(vl_data_analysis$pub_id) == 158)
 
 pk_data_analysis = pk_data_stem %>% 
-  dplyr::filter(!pub_id %in% low_sample_ptids & has_neut_data & infection_pre85wks) %>%
+  dplyr::filter(has_neut_data & infection_pre85wks) %>%
   left_join(neut_merge, by = "pub_id") %>%
   mutate(
     stats_flag = pub_id %in% stats_ptids,
@@ -565,7 +566,7 @@ pk_data_analysis = pk_data_stem %>%
     )
 
 n_distinct(pk_data_analysis$pub_id)
-stopifnot(n_distinct(pk_data_analysis$pub_id) == 96)
+stopifnot(n_distinct(pk_data_analysis$pub_id) == 98)
 n_distinct(subset(pk_data_analysis, stats_flag)$pub_id)
 n_distinct(subset(pk_data_analysis, vl_model_flag)$pub_id)
 

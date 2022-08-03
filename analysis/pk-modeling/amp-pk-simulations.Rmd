@@ -20,7 +20,8 @@ Two simulations performed here:
 
 Both datasets will have key times merged on for easier filter to concentrations at those times.
 
-
+The dosing data comes from the full infusion information rather than the PK dataset, but results from both approaches are compared.
+For the full infusion data, any infusion after day 0, is assumed to occur at time x.1 to offset with viral measurements that would be pre-infusion on the same day (days_enrollment_dose, see final step in data-processing).
 
 ```{r load-packages, echo = FALSE, message=F,output=F}
 knitr::opts_chunk$set(echo = F)
@@ -29,14 +30,11 @@ library(tidyverse)
 library(here)
 library(glue)
 library(kableExtra)
-library(lixoftConnectors)
 library(RxODE)
 
 theme_set(theme_bw() + theme(legend.position = "top"))
 
 options(scipen = 999)
-
-initializeLixoftConnectors(software = "monolix")
 
 rx_lab = tibble(
   rx_code2 = c("C", "T1", "T2"),
@@ -51,122 +49,26 @@ save_shared_folder = F
 ```{r load-funs-data}
 
 source(here("R", "directory-funs.R"))
-source(here("R", "mlx-model-funs.R"))
-source(here("R", "fix-parm-funs.R"))
 source(here("R", "mlx-res-processing.R"))
 
-rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
-
+#rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 pk_data_nm = read_csv(mlx_data_here("pk-nm-data.csv"), col_types = cols())
-median_weight = pk_data_nm %>% distinct(pub_id, weight) %>% summarize(median(weight)) %>% pull()
 pk_data_analysis = read_csv(clean_data_here("adata-pk.csv"), col_types = cols())
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols())
+all_dose_data = read_csv(clean_data_here("dosing-data.csv"), col_types = cols())
+pk_indiv_parms = read_csv(here("output/pk-modeling", "pk-mode-parms.csv"), col_types = cols())
+
 analysis_ptids = unique(pk_data_analysis$pub_id)
+stopifnot(length(analysis_ptids) == 98)
 
-vl_data_analysis = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
+vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
 
-neut_data = read_csv(clean_data_here("amp-neut-blinded.csv"), col_types = cols())
-
-pk_dir_tag = function(x) paste0("PK/", x)
+pk_location = "PK/VRC01AMP_Case-Cntrl"
 pk_model_here = function(x, ...) mlx_model_here(pk_dir_tag(x), ...)
 ```
 
 
-
-# Explore PK
-
-```{r}
-loadProject(mlx_model_here(pk_dir_tag("VRC01AMP_Case-Cntrl"), mlxtran = T))
-
-```
-
-## Setup
-
-```{r load-pk-res}
-
-# getIndividualParameterModel()$formula
-# log(Cl) = log(Cl_pop) + beta_Cl_tWT*tWT + beta_Cl_study_1*[study = 1]
-# log(V2) = log(V2_pop) + beta_V2_study_1*[study = 1]
-
-time_data = read_csv(clean_data_here("ptid-time-data.csv"), col_types = cols())
-pop_ests = get_pop_ests(pk_dir_tag("VRC01AMP_Case-Cntrl"))
-
-pop_wide = spread(pop_ests, key = parameter, value = value)
-
-indiv_parms_no_followup = pk_data_analysis %>%
-  dplyr::filter(no_followup) %>%
-  transmute(
-    pub_id = pub_id,
-    Cl = exp(log(pop_wide$Cl_pop) + pop_wide$beta_Cl_tWT*log(weight/67.3) + pop_wide$beta_Cl_study_1*(study == 1)),
-    V1 = pop_wide$V1_pop,
-    Q = pop_wide$Q_pop,
-    V2 = exp(log(pop_wide$V2_pop) + pop_wide$beta_V2_study_1 * (study == 1)),
-    est_method = 'population - missing followup' 
-  )
-
-indiv_parms_mode = get_indiv_parms(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>%
-  dplyr::select(pub_id = id, contains("_mode")) %>%
-  rename_with(~str_replace(., "_mode", "")) %>%
-  dplyr::filter(pub_id %in% analysis_ptids) %>%
-  mutate(est_method = 'mode') %>%
-  bind_rows(indiv_parms_no_followup) %>%
-  left_join(rx_dat, by = "pub_id") %>%
-  mutate(rx_lab = factor(rx_code2, levels = rx_lab$rx_code2, labels = rx_lab$trt_cat)) %>%
-  dplyr::select(-rx) %>%
-  write_csv(here("output/pk-modeling", "pk-mode-parms.csv"))
- stopifnot(n_distinct(indiv_parms_mode$pub_id) == 96)
-
-indiv_fits = get_indiv_fits(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>% rename(pub_id = ID) %>%
-  dplyr::filter(pub_id %in% analysis_ptids) 
-
-indiv_preds = get_indiv_preds(pk_dir_tag("VRC01AMP_Case-Cntrl")) %>% rename(pub_id = ID) %>%
-  dplyr::filter(pub_id %in% analysis_ptids)
-
-# the 15 people with no concentration data,  of course are missing
-
-missing_ptids_parms = setdiff(analysis_ptids, unique(indiv_parms_mode$pub_id))
-n_distinct(missing_ptids_parms)
-
-missing_ptids_fits = setdiff(analysis_ptids, unique(indiv_fits$pub_id))
-n_distinct(missing_ptids_fits)
-
-missing_ptids_preds = setdiff(analysis_ptids, unique(indiv_preds$pub_id))
-n_distinct(missing_ptids_preds)
-```
-
-## Fits - mlx
-
-```{r, fits}
-
-#| fig.width=12, fig.height=12
-
-pk_fits = ggplot(indiv_fits, aes(x = time/7, y = pmax(0.03, indivPredMode))) +
-  geom_line() +
-  geom_point(data = indiv_preds, aes(y = DV)) +
-  scale_y_log10() +
-  facet_wrap( ~ pub_id, nrow = 9, ncol = 9) +
-  geom_vline(data = dplyr::filter(time_data, pub_id %in% unique(indiv_fits$pub_id)), 
-             aes(xintercept = tpf_day/7), colour = "red", linetype = 'dashed') +
-  geom_vline(data = dplyr::filter(time_data, pub_id %in% unique(indiv_fits$pub_id)), 
-             aes(xintercept = fp_day/7), colour = "red") +
-  labs(y = "[VRC01]") +
-  theme(legend.position = 'top') +
-  labs(x = "weeks") +
-  ggtitle("dashed = PF-infection time. solid = first positive")
-
-pk_fits
-
-ggsave(here("output/pk-modeling/pk_fits.pdf"), pk_fits, width = 12, height = 12)
-
-```
-
-## Fits - RxODE
-
-```{r fit-nlmixr-setup}
-
-dose_data = pk_data_nm %>%
-  dplyr::filter(DV == "." & AMT != ".") %>%
-  mutate(across(c(AMT, RATE), as.numeric)) %>%
-  select(pub_id, TIME, AMT, RATE, DOSENO)
+```{r pk-rxode-setup}
 
 pk_2cmpt <- RxODE({
   kel = Cl/V1
@@ -180,16 +82,35 @@ pk_2cmpt <- RxODE({
   Pc = peri/V2
 })
 
+#' RxODE PK Simulator - simulated individual PK
+#'
+#' @param final_day 
+#' @param parms tibble or named vector, needs Cl, V1, V2, Q
+#' @param dose_info tibble/data.frame with dose info by columns for TIME, AMT, RATE, DOSENO
+#' @param key_times vector of specific times to check 
+#' @param post_infusion_draw automatically adds draw after infusions for correct peak (default 0 days)
+#' @param output_grid_by time grid spacing (default daily)
+#'
+#' @return
+#'
+#' @examples 
+#' test_sim = sim_pk(100, parms = tibble(Cl = 0.58, V1 = 3.53, Q = 0.676, V2 = 4.75),
+#'   dose_info = tibble(TIME = c(0, 49.1), AMT = c(580, 600), RATE = c(15000, 27000), DOSENO = 1:2))
+#' ggplot(test_sim, aes(x = days_enrollment, y = centr)) + geom_line()
+#' 
 sim_pk <- function(final_day,
                    parms,
                    dose_info,
                    key_times = NULL,
+                   post_infusion_draw = 0,
                    output_grid_by = 1) {
   
-  sim_times = c(seq(0, final_day, by = output_grid_by), key_times) %>%
+  # add samples right after infusions
+  post_dose_times = dose_info$TIME + dose_info$AMT/dose_info$RATE + post_infusion_draw
+  
+  sim_times = c(seq(0, final_day, by = output_grid_by), key_times, dose_info$TIME, post_dose_times) %>%
     sort() %>%
     unique()
-
 
   ev = eventTable(time.units = "days") %>%
     add.sampling(sim_times) 
@@ -214,36 +135,150 @@ sim_pk <- function(final_day,
 
 ```
 
+# Explore PK
 
-```{r test-dat-setup, eval = F}
-test_pub_id = "704-0662"
-test_set = subset(indiv_parms_mode, pub_id == test_pub_id) %>%
-  select(where(is.numeric))
-test_dose = subset(dose_data, pub_id == test_pub_id) 
-vl_times = subset(time_data, pub_id == test_pub_id)
+```{r read-pk-res, eval = F}
+#loadProject(mlx_model_here(pk_dir_tag("VRC01AMP_Case-Cntrl"), mlxtran = T))
+indiv_fits = get_indiv_fits(pk_location) %>% rename(pub_id = ID) %>%
+  dplyr::filter(pub_id %in% analysis_ptids) 
 
-x = sim_pk(vl_times$final_vl_day, test_set, dose_info = test_dose, 
-           key_times = c(subset(indiv_preds, pub_id == test_pub_id)$time,
-                         subset(indiv_fits, pub_id == test_pub_id)$time,
-                         vl_times$fp_day, vl_times$tpf_day, vl_times$dx_day)) %>%
-  mutate(pub_id = test_pub_id)
+indiv_preds = get_indiv_preds(pk_location) %>% rename(pub_id = ID) %>%
+  dplyr::filter(pub_id %in% analysis_ptids)
+```
 
+## Fits - mlx
 
-ggplot(data = x, aes(x = days_enrollment/7, y = Cc)) +
+```{r, fits}
+#| fig.width=12, fig.height=12
+
+pk_fits = ggplot(indiv_fits, aes(x = time/7, y = pmax(0.03, indivPredMode))) +
   geom_line() +
-  geom_line(data = subset(indiv_fits, pub_id == test_pub_id), aes(x = time/7, y = indivPredMode), colour = "red") +
-  scale_y_log10(limits = c(0.1, NA)) +
-  geom_vline(data = vl_times, aes(xintercept = fp_day/7)) 
+  geom_point(data = indiv_preds, aes(y = DV)) +
+  scale_y_log10() +
+  facet_wrap( ~ pub_id, nrow = 10, ncol = 9) +
+  geom_vline(data = dplyr::filter(time_data, pub_id %in% unique(indiv_fits$pub_id)), 
+             aes(xintercept = tpf_day/7), colour = "red", linetype = 'dashed') +
+  geom_vline(data = dplyr::filter(time_data, pub_id %in% unique(indiv_fits$pub_id)), 
+             aes(xintercept = fp_day/7), colour = "red") +
+  labs(y = "[VRC01]") +
+  theme(legend.position = 'top') +
+  labs(x = "weeks") +
+  ggtitle("dashed = PF-infection time. solid = first positive")
 
+pk_fits
 
-subset(indiv_preds, pub_id == test_pub_id) %>%
-  dplyr::select(pub_id, time, DV, indivPredMode) %>%
-  left_join(dplyr::select(indiv_fits, pub_id, time, indivPredMode), by = c("pub_id", "time")) %>%
-  left_join(dplyr::select(x, pub_id, time = days_enrollment, Cc), by = c("pub_id", "time")) 
+ggsave(here("output/pk-modeling/pk_fits.pdf"), pk_fits, width = 12, height = 12)
 
 ```
 
-```{r sim-pk}
+# Sims - RxODE
+
+## Dose error checking
+
+Two participants have infusions that were not in the case-control data.
+
+The times are rounded in my cleaned version of the dose data. RATES are calculated differently, when done with SAS
+there was rounding before unit conversion (differences < 1 minute).
+
+```{r setup-doses}
+
+dose_data_casectrl = pk_data_nm %>%
+  dplyr::filter(DV == "." & AMT != "." & pub_id %in% analysis_ptids) %>%
+  mutate(across(c(AMT, RATE), as.numeric)) %>%
+  select(pub_id, TIME, AMT, RATE, DOSENO) %>%
+  arrange(pub_id, TIME, AMT, RATE, DOSENO)
+
+dose_data = all_dose_data %>%
+  dplyr::filter(pub_id %in% analysis_ptids) %>%
+  select(pub_id, TIME = days_enrollment_dose, AMT = dose_mg, RATE, DOSENO = infusion_no, days_fp) %>%
+  arrange(pub_id, TIME, AMT, RATE, DOSENO)
+  
+dose_data_prefp = dplyr::filter(dose_data, days_fp < 0)
+
+# for error we just compare the pre-first positive to case-control
+
+# should be missing .x not .y
+merge_test = full_join(dose_data_casectrl, dose_data_prefp, by = c("pub_id", "DOSENO"))
+stopifnot(all(!is.na(merge_test$AMT.y)))
+subset(merge_test, is.na(AMT.x))
+
+ggplot(subset(merge_test, !is.na(AMT.x)), aes(x = pub_id, y = AMT.y-AMT.x)) +
+  geom_point() +
+  theme(axis.text.x = element_blank(), panel.grid = element_blank())
+
+ggplot(subset(merge_test, !is.na(AMT.x)), aes(x = pub_id, y = TIME.y-TIME.x)) +
+  geom_point() +
+  theme(axis.text.x = element_blank(), panel.grid = element_blank())
+
+ggplot(subset(merge_test, !is.na(AMT.x)), aes(x = pub_id, y = RATE.y/RATE.x)) +
+  geom_point() +
+  theme(axis.text.x = element_blank(), panel.grid = element_blank())
+
+# reduce_comp = diffdf::diffdf(base = dose_data_casectrl, 
+#                              subset(select(dose_data_prefp,  -days_fp), !( (pub_id == "704-2624" & DOSENO == 9) |
+#                                                           (pub_id == "704-2901" & DOSENO == 8))))
+
+```
+
+## Simulation A: Through first positive
+
+WHY ARE THERE NEGATIVE ENROLLMENT DAYS!?
+
+```{r sim-pk-fp}
+
+sim_pk_data_prefp = map_df(unique(pk_indiv_parms$pub_id), function(i){
+  
+  parms = dplyr::select(subset(pk_indiv_parms, pub_id == i), Cl, V1, Q, V2)
+  stopifnot(nrow(parms) == 1)
+  
+  dosing = subset(dose_data_prefp, pub_id == i) 
+  dosing_cc = subset(dose_data_casectrl, pub_id == i) 
+  
+  fp_day = subset(time_data, pub_id == i)$fp_day
+  
+  
+  vl_data_prefp = vl_data %>%
+    filter(pub_id == i & days_enrollment <= fp_day) %>%
+    dplyr::select(pub_id, days_enrollment, cens, vl, log10vl)
+  
+  test_sim = sim_pk(fp_day, parms = parms, dose_info = dosing_cc) %>%
+    mutate(temp = "case-control-dosing", pub_id = i)
+       
+  out = sim_pk(fp_day, parms = parms, dose_info = dosing) %>%
+    mutate(temp = "dosing-data", pub_id = i) %>%
+    bind_rows(test_sim) %>%
+    dplyr::select(pub_id, days_enrollment, centr_conc = Cc, peri_conc = Pc, temp) %>%
+    left_join(pk_indiv_parms, by = "pub_id") %>%
+    full_join(vl_data_prefp, by = c("pub_id", "days_enrollment")) %>%
+    mutate(fp_day =  fp_day)
+    
+  
+  if(any(is.na(out$centr_conc))) browser()
+  
+  stopifnot(all(!is.na(out$centr_conc)))
+  stopifnot(all(!is.na(out$peri_conc)))
+  
+  out
+})
+
+stopifnot(nrow(subset(sim_pk_data_prefp, temp == "dosing-data" & days_enrollment == fp_day)) == 98)
+
+```
+
+```{r comp-fp-conc}
+
+sim_pk_data_prefp %>%
+  dplyr::filter(days_enrollment == fp_day) %>%
+  select(pub_id, temp, centr_conc) %>%
+  pivot_wider(values_from = centr_conc, names_from = temp) %>%
+  filter(abs(`dosing-data` - `case-control-dosing`) > 0.1) %>%
+  ggplot(aes(x = pub_id, y = `dosing-data` -`case-control-dosing`)) +
+    geom_point()
+
+```
+
+
+```{r old}
 
 
 sim_pk_dat = map_df(unique(subset(indiv_parms_mode, !is.na(Cl))$pub_id), function(i){
@@ -285,11 +320,7 @@ sim_pk_dat = map_df(unique(subset(indiv_parms_mode, !is.na(Cl))$pub_id), functio
   
 })
 
-any(is.na(sim_pk_dat$centr_conc))
-any(is.na(sim_pk_dat$peri_conc))
-
 ```
-
 
 ```{r fits-rxode}
 
@@ -346,4 +377,37 @@ read_csv(here("output/pk-modeling/infection-day-pkpd-x.csv")) %>%
 ```{r save-shared-pk, eval = save_shared_folder}
 write_csv(sim_pk_dat_neut, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/sim-pk-withVLPD.csv")
 write_csv(infection_day_conc, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/predicted-pk-infection-day.csv")
+```
+
+
+```{r test-dat-setup, eval = F}
+
+# this just tests consistency between simulations
+# the alignment of continuous sample times is important for concentration
+
+test_pub_id = "704-0662"
+test_set = subset(pk_indiv_parms, pub_id == test_pub_id) %>%
+  select(where(is.numeric))
+test_dose = subset(dose_data, pub_id == test_pub_id) 
+test_vl_times = subset(time_data, pub_id == test_pub_id)
+
+x = sim_pk(test_vl_times$fp_day, test_set, dose_info = test_dose, 
+           key_times = c(round(subset(indiv_preds, pub_id == test_pub_id)$time, 1),
+                         test_vl_times$fp_day)) %>%
+  mutate(pub_id = test_pub_id)
+
+
+ggplot(data = x, aes(x = days_enrollment/7, y = pmax(0.1,Cc))) +
+  geom_line() +
+  geom_line(data = subset(indiv_fits, pub_id == test_pub_id), 
+            aes(x = time/7, y = pmax(0.1, indivPredMode)), colour = "red") +
+  scale_y_log10(limits = c(0.09, NA)) +
+  geom_vline(data = test_vl_times, aes(xintercept = fp_day/7)) 
+
+subset(indiv_preds, pub_id == test_pub_id) %>%
+  mutate(time = round(time, 1)) %>%
+  dplyr::select(pub_id, time, DV, indivPredMode) %>%
+  left_join(dplyr::select(mutate(indiv_fits, time = round(time, 1)), pub_id, time, indivPredMode), by = c("pub_id", "time")) %>%
+  left_join(dplyr::select(x, pub_id, time = days_enrollment, Cc), by = c("pub_id", "time")) 
+
 ```
