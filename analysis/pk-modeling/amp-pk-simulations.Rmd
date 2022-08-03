@@ -26,6 +26,7 @@ For the full infusion data, any infusion after day 0, is assumed to occur at tim
 ```{r load-packages, echo = FALSE, message=F,output=F}
 knitr::opts_chunk$set(echo = F)
 library(VISCfunctions)
+library(zoo)
 library(tidyverse)
 library(here)
 library(glue)
@@ -41,7 +42,7 @@ rx_lab = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
-save_shared_folder = F
+save_shared_folder = T
 
 ```
 
@@ -137,7 +138,7 @@ sim_pk <- function(final_day,
 
 # Explore PK
 
-```{r read-pk-res, eval = F}
+```{r read-pk-res}
 #loadProject(mlx_model_here(pk_dir_tag("VRC01AMP_Case-Cntrl"), mlxtran = T))
 indiv_fits = get_indiv_fits(pk_location) %>% rename(pub_id = ID) %>%
   dplyr::filter(pub_id %in% analysis_ptids) 
@@ -171,9 +172,8 @@ ggsave(here("output/pk-modeling/pk_fits.pdf"), pk_fits, width = 12, height = 12)
 
 ```
 
-# Sims - RxODE
 
-## Dose error checking
+# Dose error checking
 
 Two participants have infusions that were not in the case-control data.
 
@@ -220,13 +220,13 @@ ggplot(subset(merge_test, !is.na(AMT.x)), aes(x = pub_id, y = RATE.y/RATE.x)) +
 
 ```
 
-## Simulation A: Through first positive
+# Simulation A: Through first positive
 
-WHY ARE THERE NEGATIVE ENROLLMENT DAYS!?
+Mostly for error checking, probably no need to save this data explicitly.
 
 ```{r sim-pk-fp}
 
-sim_pk_data_prefp = map_df(unique(pk_indiv_parms$pub_id), function(i){
+sim_pk_prefp_bothdosing = map_df(unique(pk_indiv_parms$pub_id), function(i){
   
   parms = dplyr::select(subset(pk_indiv_parms, pub_id == i), Cl, V1, Q, V2)
   stopifnot(nrow(parms) == 1)
@@ -236,10 +236,16 @@ sim_pk_data_prefp = map_df(unique(pk_indiv_parms$pub_id), function(i){
   
   fp_day = subset(time_data, pub_id == i)$fp_day
   
-  
   vl_data_prefp = vl_data %>%
     filter(pub_id == i & days_enrollment <= fp_day) %>%
     dplyr::select(pub_id, days_enrollment, cens, vl, log10vl)
+  # for error checking
+  virus_rows = nrow(vl_data_prefp)
+  
+  obs_data = subset(indiv_preds, pub_id == i) %>%
+    dplyr::select(pub_id, days_enrollment = time, obs_conc = DV) %>%
+    mutate(days_enrollment = round(days_enrollment))
+  obs_rows = nrow(obs_data)
   
   test_sim = sim_pk(fp_day, parms = parms, dose_info = dosing_cc) %>%
     mutate(temp = "case-control-dosing", pub_id = i)
@@ -250,77 +256,255 @@ sim_pk_data_prefp = map_df(unique(pk_indiv_parms$pub_id), function(i){
     dplyr::select(pub_id, days_enrollment, centr_conc = Cc, peri_conc = Pc, temp) %>%
     left_join(pk_indiv_parms, by = "pub_id") %>%
     full_join(vl_data_prefp, by = c("pub_id", "days_enrollment")) %>%
-    mutate(fp_day =  fp_day)
-    
+    full_join(obs_data, by = c("pub_id", "days_enrollment")) %>%
+    mutate(fp_day = fp_day)
   
-  if(any(is.na(out$centr_conc))) browser()
-  
+  # these just confirm the full joins worked correctly  
   stopifnot(all(!is.na(out$centr_conc)))
   stopifnot(all(!is.na(out$peri_conc)))
+  stopifnot(nrow(subset(out, !is.na(log10vl) & temp == "dosing-data")) == virus_rows)
+  stopifnot(nrow(subset(out, !is.na(obs_conc) & temp == "dosing-data")) == obs_rows)
   
   out
 })
 
-stopifnot(nrow(subset(sim_pk_data_prefp, temp == "dosing-data" & days_enrollment == fp_day)) == 98)
+stopifnot(nrow(subset(sim_pk_prefp_bothdosing, temp == "dosing-data" & days_enrollment == fp_day)) == 98)
 
 ```
 
+Missing infusion information in the case-control data makes large difference for 2 participants. Otherwise, differences between dosing data sources are minimal (plot shows just cases > 0.1 mcg/ml absolute difference).
+
 ```{r comp-fp-conc}
 
-sim_pk_data_prefp %>%
+sim_pk_prefp_bothdosing %>%
+  filter(days_enrollment == round(days_enrollment)) %>%
+  select(pub_id, days_enrollment, temp, centr_conc) %>%
+  pivot_wider(values_from = centr_conc, names_from = temp) %>%
+  ggplot(aes(x = pub_id, y = `dosing-data` -`case-control-dosing`)) +
+    geom_point() 
+
+sim_pk_prefp_bothdosing %>%
   dplyr::filter(days_enrollment == fp_day) %>%
   select(pub_id, temp, centr_conc) %>%
   pivot_wider(values_from = centr_conc, names_from = temp) %>%
   filter(abs(`dosing-data` - `case-control-dosing`) > 0.1) %>%
   ggplot(aes(x = pub_id, y = `dosing-data` -`case-control-dosing`)) +
-    geom_point()
+    geom_point() +
+    ylab("First positive concentration: infusion data vs. case-control pk data (> 0.1)")+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 ```
 
+```{r pre-output}
 
-```{r old}
+sim_pk_prefp = select(subset(sim_pk_prefp_bothdosing, temp == "dosing-data"), -temp) %>%
+  mutate(first_positive = days_enrollment == fp_day)
 
+# really should just be one fp per person, with upper censoring
+stopifnot(n_distinct(subset(sim_pk_prefp, first_positive)$pub_id) == 98)
 
-sim_pk_dat = map_df(unique(subset(indiv_parms_mode, !is.na(Cl))$pub_id), function(i){
+stopifnot(identical(subset(sim_pk_prefp, cens != 1 & !is.na(log10vl)), 
+                     subset(sim_pk_prefp, first_positive))
+          )
+
+indiv_preds %>%
+  mutate(time = round(time)) %>%
+  dplyr::select(pub_id, days_enrollment = time, indivPredMode) %>%
+  left_join(sim_pk_prefp, by = c("pub_id", "days_enrollment")) %>%
+  ggplot(aes(x = centr_conc, y = indivPredMode)) +
+  geom_point() +
+  scale_y_log10("Matched MLX predictions ") +
+  scale_x_log10("Sim predictions (observation times)") 
+
+ggplot(subset(sim_pk_prefp, !is.na(obs_conc)), aes(x = centr_conc, y = obs_conc)) +
+  geom_point() +
+  scale_y_log10("Obs. concentrations") +
+  scale_x_log10("Sim predictions (observation times)") 
+
+```
+
+# Simulation B: All predicted PK with all VL through ART initiation.
+
+One person has a negative VL on dx day but all have vl measurements at first positive (by definition)
+
+```{r full-pk-vl-data}
+
+sim_pk_dat = map_df(unique(pk_indiv_parms$pub_id), function(i){
   
-  # relevent data
-  parms = dplyr::select(subset(indiv_parms_mode, pub_id == i), Cl, V1, Q, V2)
+  parms = dplyr::select(subset(pk_indiv_parms, pub_id == i), Cl, V1, Q, V2)
+  ptid_time_demo = subset(time_data, pub_id == i) %>%
+    select(pub_id, protocol, study_region_cat, contains("_day"), contains("gmt"), nisolates, vl_model_flag)
+  stopifnot(nrow(parms) == 1)
+  stopifnot(nrow(ptid_time_demo) == 1)
+ 
   dosing = subset(dose_data, pub_id == i) 
-  vl_data = dplyr::select(subset(vl_data_analysis, pub_id == i & days_enrollment >= fp_day), 
-                          pub_id, days_enrollment, cens, vl, log10vl)
-  vl_data_times = vl_data$days_enrollment
-  vl_times = subset(time_data, pub_id == i)
-  obs_data = dplyr::select(subset(indiv_preds, pub_id == i), pub_id, time, obs_conc = DV)
+  dose_info_merge = select(dosing, pub_id, recent_infusion_time = TIME, infusion_no = DOSENO) %>%
+    mutate(days_enrollment = recent_infusion_time)
+
+  vl_data_ptid = vl_data %>%
+    filter(pub_id == i) %>%
+    dplyr::select(pub_id, days_enrollment, cens, vl, log10vl)
+  # for error checking
+  virus_rows = nrow(vl_data_ptid)
   
-  final_time = vl_times$final_vl_day
-  extra_pk_vl_times = c(obs_data$time,
-               subset(indiv_fits, pub_id == i)$time,
-               vl_data_times, 
-               vl_times$tpf_day
-  )
-               
-  sim_pk(
-    vl_times$final_vl_day,
-    parms = parms,
-    dose_info = dosing,
-    key_times = extra_pk_vl_times
-  ) %>%
+  obs_data = subset(indiv_preds, pub_id == i) %>%
+    dplyr::select(pub_id, days_enrollment = time, obs_conc = DV) %>%
+    mutate(days_enrollment = round(days_enrollment))
+  obs_rows = nrow(obs_data)
+  
+  out = sim_pk(min(ptid_time_demo$art_day, ptid_time_demo$final_day), parms = parms, dose_info = dosing) %>%
     mutate(pub_id = i) %>%
     dplyr::select(pub_id, days_enrollment, centr_conc = Cc, peri_conc = Pc) %>%
-    left_join(indiv_parms_mode, by = "pub_id") %>%
-    left_join(obs_data, by = c("pub_id", "days_enrollment" = "time")) %>%
-    left_join(vl_data, by = c("pub_id", "days_enrollment")) %>%
-    mutate(
-      tpf_day = vl_times$tpf_day,
-      fp_day =  vl_times$fp_day,
-      dx_day = vl_times$dx_day,
-      post_fp = days_enrollment >= fp_day,
-      vl_detected = !is.na(vl),
-    ) 
+    left_join(pk_indiv_parms, by = "pub_id") %>%
+    left_join(dose_info_merge, by = c("pub_id", "days_enrollment")) %>%
+    mutate(recent_infusion_time = na.locf(recent_infusion_time),
+           infusion_no = na.locf(infusion_no)) %>%
+    left_join(ptid_time_demo, by = "pub_id") %>%
+    full_join(obs_data, by = c("pub_id", "days_enrollment")) %>%
+    full_join(vl_data_ptid, by = c("pub_id", "days_enrollment"))
+
+  # these just confirm the full joins worked correctly  
+  stopifnot(all(!is.na(out$centr_conc)))
+  stopifnot(all(!is.na(out$peri_conc)))
+  stopifnot(nrow(subset(out, !is.na(log10vl))) == virus_rows)
+  stopifnot(nrow(subset(out, !is.na(obs_conc))) == obs_rows)
   
-})
+  # check dose merge
+  stopifnot(all(dosing$TIME %in% unique(out$recent_infusion_time)))
+  stopifnot(all(dosing$DOSENO %in% unique(out$infusion_no)))
+  
+  out
+}) %>%
+  mutate(
+    first_positive = days_enrollment == fp_day,
+    diagnosis = days_enrollment == dx_day,
+    post_fp = days_enrollment >= fp_day,
+    vl_detected = if_else(!is.na(vl), cens != 1, F)
+  )
+
+
+stopifnot(nrow(subset(sim_pk_dat, diagnosis)) == 98)
+n_distinct(subset(sim_pk_dat, diagnosis & vl_detected)$pub_id)
+
+stopifnot(nrow(subset(sim_pk_dat, first_positive)) == 98)
+n_distinct(subset(sim_pk_dat, first_positive & vl_detected)$pub_id)
+
+
+n_distinct(subset(sim_pk_dat, vl_model_flag)$pub_id)
 
 ```
+
+
+```{r error-checks}
+
+# check matches sims up to first positive
+stopifnot(all.equal(select(subset(sim_pk_dat, first_positive), names(sim_pk_prefp)),
+          subset(sim_pk_prefp, first_positive), 
+          tolerance = 1e-7)
+          )
+
+```
+
+## PK data with vl measurement times
+
+Note that from 52 people recieved infusions at/after dx and 60 at/after first positive
+
+```{r}
+#| fig.width=12, fig.height=12
+
+sim_pk_dat %>%
+  dplyr::filter(final_infusion_day < fp_day & days_enrollment >= final_infusion_day) %>%
+  mutate(vl_days = if_else(vl_detected, days_enrollment, NA_real_)) %>%
+  ggplot(aes(x = days_enrollment / 7 - fp_day / 7, y = pmax(0.1, centr_conc))) +
+  geom_line() +
+  scale_y_log10() +
+  geom_vline(aes(xintercept = art_day / 7 - fp_day / 7), colour = "red") +
+  geom_vline(aes(xintercept = vl_days / 7 - fp_day / 7), linetype = "dashed") +
+  facet_wrap(~ pub_id, scales = "free_x") +
+  labs(y = "[VRC01]") +
+  theme(legend.position = 'top') +
+  labs(x = "Wks post-fp") +
+  ggtitle("PTIDs with final infusions before first postive. dashed black = pos. vl, red = ART time")
+
+```
+
+```{r}
+#| fig.width=12, fig.height=12
+
+sim_pk_dat %>%
+  dplyr::filter(final_infusion_day >= fp_day & post_fp) %>%
+  mutate(vl_days = if_else(vl_detected, days_enrollment, NA_real_)) %>%
+  ggplot(aes(x = days_enrollment / 7 - fp_day / 7, y = centr_conc)) +
+  geom_line() +
+  xlab("Wks post-fp") +
+  scale_y_log10() +
+  geom_vline(aes(xintercept = art_day / 7 - fp_day / 7), colour = "red") +
+  geom_vline(aes(xintercept = vl_days / 7 - fp_day / 7), linetype = "dashed") +
+  facet_wrap(~ pub_id, scales = "free_x") +
+  labs(y = "[VRC01]") +
+  theme(legend.position = 'top') +
+  labs(x = "Wks post-fp") +
+  ggtitle("PTIDs with infusions on/after first postive. dashed black = pos. vl, red = ART time")
+
+```
+
+When dose times and viral load measurements overlap, want to make sure the vl measurement
+is tagged before the dosing.
+
+```{r}
+
+sim_pk_dat %>%
+  dplyr::filter(first_positive) %>%
+  ggplot(aes(x = log10(pmax(centr_conc, 1)), y = log10vl)) +
+  geom_point() +
+  geom_smooth(method = "lm",  formula = 'y ~ x') +
+  xlim(0, 1.75) +
+  ylim(0, 8)
+
+```
+
+Confirming that VL measurement is just before the dose event on first positive.
+
+```{r}
+
+sim_pk_dat %>%
+  dplyr::filter(days_enrollment == fp_day + 1 | first_positive) %>%
+  mutate(log10vl = zoo::na.locf(log10vl), fp_cat = days_enrollment - fp_day) %>%
+  ggplot(aes(x = log10(pmax(centr_conc, 1)), y = log10vl)) +
+  geom_point() +
+  #xlim(0, 1.75) +
+  #ylim(0, 8) +
+  facet_wrap(~fp_cat, nrow = 2) +
+  ggtitle("PTIDs with infusions on/after first positive (fp day = 0, day after fp = 1).")
+
+```
+
+Only one person multiple (2) infusions after first positive.
+
+```{r}
+
+sim_pk_dat %>%
+  dplyr::filter(final_infusion_day >= fp_day & post_fp) %>%
+  group_by(pub_id) %>%
+  summarize(
+    post_fp_doses = n_distinct(infusion_no)
+  ) %>%
+  filter(post_fp_doses > 2)
+
+sim_pk_dat %>%
+  dplyr::filter(final_infusion_day >= fp_day & post_fp) %>%
+  group_by(pub_id) %>%
+  mutate(
+    post_fp_doses = n_distinct(infusion_no)
+  ) %>%
+  filter(post_fp_doses > 2) %>%
+  dplyr::filter(days_enrollment == final_infusion_day + 1 | 
+                  days_enrollment == final_infusion_day) %>%
+  select(pub_id, days_enrollment, final_infusion_day, log10vl, centr_conc)
+
+```
+
+## Fits - Simulation
 
 ```{r fits-rxode}
 
@@ -331,12 +515,11 @@ pk_fits_ode = ggplot(sim_pk_dat, aes(x = days_enrollment/7, y = pmax(0.03, centr
   geom_point(aes(y = obs_conc)) +
   scale_y_log10() +
   facet_wrap( ~ pub_id, nrow = 10, ncol = 10) +
-  geom_vline(aes(xintercept = tpf_day/7), colour = "red", linetype = 'dashed') +
   geom_vline(aes(xintercept = fp_day/7), colour = "red") +
   labs(y = "[VRC01]") +
   theme(legend.position = 'top') +
-  labs(x = "weeks") +
-  ggtitle("dashed = PF-infection time. solid = first positive")
+  labs(x = "weeks post-enrollment") +
+  ggtitle("red = first positive")
 
 pk_fits_ode
 
@@ -351,63 +534,15 @@ Merge on neut data for full time series PKPD with viral load.
 Also filter to infection data alone.
 
 ```{r save-pk-sims}
-
-sim_pk_dat_neut = sim_pk_dat %>%
-  left_join(dplyr::select(neut_data, -contains("cat")) , by = "pub_id") %>%
-  write_csv(here("output/pk-modeling/pk-sims-vl-neut.csv"))
-
-infection_day_conc = sim_pk_dat_neut %>%
-  dplyr::filter(abs(days_enrollment - tpf_day) <1e-6) %>%
-  dplyr::select(pub_id, days_enrollment, centr_conc, peri_conc, tpf_day, fp_day, contains("rx"), contains("gmt")) %>%
-   write_csv(here("output/pk-modeling/infection-day-pkpd.csv"))
-
-n_distinct(infection_day_conc)
-infection_day_conc %>% group_by(pub_id) %>% summarize(total = n()) %>% filter(total != 1)
-
-```
-
-
-```{r}
-read_csv(here("output/pk-modeling/infection-day-pkpd-x.csv")) %>%
-  dplyr::select(pub_id, centr_conc) %>%
-  full_join(select(infection_day_conc, pub_id, centr_conc), by = "pub_id") ->x
+glimpse(sim_pk_dat)
+write_csv(sim_pk_dat, here("output/pk-modeling/sim-pk-withVLneut.csv"))
 
 ```
 
 ```{r save-shared-pk, eval = save_shared_folder}
-write_csv(sim_pk_dat_neut, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/sim-pk-withVLPD.csv")
-write_csv(infection_day_conc, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/predicted-pk-infection-day.csv")
-```
+write_csv(tibble(), 
+           paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!PK_SIM_DATA UPDATED - ",
+                  Sys.Date()))
 
-
-```{r test-dat-setup, eval = F}
-
-# this just tests consistency between simulations
-# the alignment of continuous sample times is important for concentration
-
-test_pub_id = "704-0662"
-test_set = subset(pk_indiv_parms, pub_id == test_pub_id) %>%
-  select(where(is.numeric))
-test_dose = subset(dose_data, pub_id == test_pub_id) 
-test_vl_times = subset(time_data, pub_id == test_pub_id)
-
-x = sim_pk(test_vl_times$fp_day, test_set, dose_info = test_dose, 
-           key_times = c(round(subset(indiv_preds, pub_id == test_pub_id)$time, 1),
-                         test_vl_times$fp_day)) %>%
-  mutate(pub_id = test_pub_id)
-
-
-ggplot(data = x, aes(x = days_enrollment/7, y = pmax(0.1,Cc))) +
-  geom_line() +
-  geom_line(data = subset(indiv_fits, pub_id == test_pub_id), 
-            aes(x = time/7, y = pmax(0.1, indivPredMode)), colour = "red") +
-  scale_y_log10(limits = c(0.09, NA)) +
-  geom_vline(data = test_vl_times, aes(xintercept = fp_day/7)) 
-
-subset(indiv_preds, pub_id == test_pub_id) %>%
-  mutate(time = round(time, 1)) %>%
-  dplyr::select(pub_id, time, DV, indivPredMode) %>%
-  left_join(dplyr::select(mutate(indiv_fits, time = round(time, 1)), pub_id, time, indivPredMode), by = c("pub_id", "time")) %>%
-  left_join(dplyr::select(x, pub_id, time = days_enrollment, Cc), by = c("pub_id", "time")) 
-
+write_csv(sim_pk_dat, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/sim-pk-withVLneut.csv")
 ```

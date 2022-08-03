@@ -35,7 +35,7 @@ rx_lab = tibble(
 
 shared_drive = dir.exists("/Volumes/trials/")
 
-save_shared_folder = F
+save_shared_folder = T
 if(!save_shared_folder) print("DATA WAS NOT UPDATED ON SHARED FOLDER")
 
 if(!dir.exists(here("output/data-processing"))) dir.create(here("output/data-processing"))
@@ -139,6 +139,23 @@ vl_data_unblind = vl_data_all %>%
 
 ```
 
+There's one case of a participant with a negative enrollment day (-1). They have no PK data, so just going to augment to 
+days_enrollment = 0.
+
+```{r vl-neg-enrollment}
+
+nrow(subset(vl_data_unblind, days_enrollment < 0))
+subset(vl_data_unblind, pub_id == "703-0795") %>% select(pub_id, days_enrollment, fp_day, dx_day, vl)
+subset(pk_data_nm, pub_id == "703-0795")
+
+x = vl_data_unblind$days_enrollment
+vl_data_unblind = mutate(vl_data_unblind, days_enrollment = if_else(pub_id == "703-0795", 
+                                                  pmax(days_enrollment, 0), days_enrollment))
+stopifnot(sum(x != vl_data_unblind$days_enrollment) == 1 & 
+            setdiff(x, vl_data_unblind$days_enrollment) == -1)
+
+
+```
 
 ```{r vl-full-sample}
 
