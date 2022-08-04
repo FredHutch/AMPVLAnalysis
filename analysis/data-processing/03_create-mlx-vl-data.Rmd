@@ -1,0 +1,80 @@
+---
+title: "Create mlx viral load data"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+
+# Creating MLX-VL data
+
+Monolix has some required specifications and variables it is expecting so this file generally creates datasets that meet those requirements. 
+
+This script focuses on creating data for fitting just VL models, which requires simpler data than the PKPD models. For the PKPD models, the data must be processed with a "VL dose", the infection times, and other fixed parameters as necessary. 
+
+- Key inputs for the data:
+  - Data generated from `analysis/data-processing/02_data-processing`
+    - processed vl data with neut data merged on: `data/processed-data/adata-vl.csv`
+      - neut/demo data from here
+      
+This will create two datasets: all participants (158 participants) and placebo only (62 participants).
+
+The processing is minimal, essentially setting up the limit variable for censoring (-1 is upper bound censored, 1 is below lloq):
+`limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))`
+
+```{r load-packages, message=F,output=F,warning=F}
+
+knitr::opts_chunk$set(echo = T)
+library(tidyverse)
+library(here)
+library(testthat)
+
+theme_set(theme_bw() + theme(legend.position = "top"))
+
+options(scipen = 999)
+
+```
+
+
+```{r load-funs-data}
+source(here("R", "directory-funs.R"))
+```
+    
+    
+```{r load-data}
+adata_vl = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+
+```
+
+```{r mlx-setup, class.source = "fold-show"}
+
+amp_vl_all = adata_vl %>%
+  mutate(
+    limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))
+    ) %>%
+  dplyr::select(pub_id, TIME = days_enrollment, DV = vl, 
+                DV_log = log10vl, fp_day, days_fp, tpf_est = fp_post_tpf, cens, limit,
+                 protocol, study_region_cat, contains("gmt"), nisolates, study, rx_code2)
+
+placebo_vl = filter(amp_vl_all, rx_code2 == "C") 
+
+```
+
+```{r error-checks}
+
+expect_equal(n_distinct(amp_vl_all$pub_id), 158)
+expect_equal(all(!is.na(amp_vl_all)), TRUE)
+expect_equal(n_distinct(placebo_vl$pub_id), 62)
+
+```
+
+```{r mlx-vl-save, class.source = "fold-show"}
+
+write_csv(amp_vl_all, mlx_data_here("amp-mlx-vl.csv"))
+
+write_csv(placebo_vl, mlx_data_here("amp-mlx-vl-placebo.csv"))
+
+```
