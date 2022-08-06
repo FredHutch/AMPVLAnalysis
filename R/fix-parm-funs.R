@@ -29,6 +29,79 @@ fix_pk_parms_cc = function(){
 
 # ----------- VL ---------------
 
+set_holte_parms = function(holte_parms, 
+                           est = "FIXED", 
+                           est_omega = "FIXED", 
+                           est_corr_rsif = c("none", "FIXED", "MLE"),
+                           dose = F, fix_inf_time = F){
+  
+  est_corr_rsif = match.arg(est_corr_rsif)
+
+  setIndividualParameterDistribution(lBt0 = "normal", lp = "normal")
+  if(dose) setIndividualParameterVariability(aS = F) else{
+    setIndividualParameterVariability(V0 = F, aS = F)
+    setPopulationParameterInformation(V0_pop = list(initialValue = holte_parms$V0_pop, method = "FIXED"))
+  }
+  setPopulationParameterInformation(
+    aS_pop = list(initialValue = holte_parms$aS_pop, method = est),
+    dS_pop = list(initialValue = holte_parms$dS_pop, method = est),
+    lBt0_pop = list(initialValue = holte_parms$lBt0_pop, method = est),
+    lp_pop = list(initialValue = holte_parms$lp_pop, method = est),
+    dI_pop = list(initialValue = holte_parms$dI_pop, method = est),
+    n_pop = list(initialValue = holte_parms$n_pop, method = est),
+    omega_dI = list(initialValue = holte_parms$omega_dI, method = est_omega),
+    omega_dS = list(initialValue = holte_parms$omega_dS, method = est_omega),
+    omega_lBt0 = list(initialValue = holte_parms$omega_lBt0, method = est_omega),
+    omega_lp = list(initialValue = holte_parms$omega_lp, method = est_omega),
+    omega_n = list(initialValue = holte_parms$omega_n, method = est_omega)    
+  )
+  
+  #infection time
+  setPopulationParameterInformation(
+    initT_pop = list(initialValue = holte_parms$initT_pop, method = "MLE"),
+    omega_initT = list(initialValue = holte_parms$omega_initT, method = "MLE")
+  )
+  if(fix_inf_time) fix_holte_est_infection_times()
+  
+  # correlation - based on RSIF setup
+  if(est_corr_rsif != "none") set_holte_corr_rsif(holte_parms, est_corr_rsif)
+  
+  x = getPopulationParameterInformation()
+  typo_check = left_join(x, gather(holte_parms), by = c("name" = "key"))
+  stopifnot(nrow(subset(typo_check, 
+                        abs(initialValue - value) > 1e-4 &
+                          name != "a" &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+  x
+}
+
+fix_holte_est_infection_times = function(){
+  setIndividualParameterDistribution(initT = "normal")
+  setIndividualParameterVariability(initT = F)
+  setCovariateModel(initT = c(holte_tinf = T))
+  setPopulationParameterInformation(
+    initT_pop = list(initialValue = 0, method = "FIXED"),
+    beta_initT_holte_tinf = list(initialValue = 1, method = "FIXED")
+  )
+}
+
+set_holte_corr_rsif = function(holte_parms, est){
+  # this follows the exact structure from the RSIF paper
+  setCorrelationBlocks(id = list(c("dS", "lBt0", "dI", "lp")))
+  setPopulationParameterInformation(
+    corr_dS_dI = list(initialValue = holte_parms$corr_dS_dI, method = est),
+    corr_lBt0_dI = list(initialValue = holte_parms$corr_lBt0_dI, method = est),
+    corr_lBt0_dS = list(initialValue = holte_parms$corr_lBt0_dS, method = est),
+    corr_lp_dI = list(initialValue = holte_parms$corr_lp_dI, method = est),
+    corr_lp_dS = list(initialValue = holte_parms$corr_lp_dS, method = est),
+    corr_lp_lBt0 = list(initialValue = holte_parms$corr_lp_lBt0, method = est)
+  )
+}
+
+
 .fix_timing_parms = function(est = "FIXED", dose = F, tcl = F){
   if(!exists("timing_parms")) stop("RV217 timing not loaded: read_csv(mlx_data_here('rsif-timing-parms.csv')")
 
@@ -110,17 +183,6 @@ setup_precursor_parms = function(initial_vals, est = "MLE", est_tau = "FIXED"){
   )
   
 }
-
-set_holte_est_infection_times = function(){
-  setIndividualParameterDistribution(initT = "normal")
-  setIndividualParameterVariability(initT = F)
-  setCovariateModel(initT = c(holte_est = T))
-  setPopulationParameterInformation(
-    initT_pop = list(initialValue = 0, method = "FIXED"),
-    beta_initT_holte_est = list(initialValue = 1, method = "FIXED")
-  )
-}
-
 
 .fix_vl_error = function(input_parms){
 

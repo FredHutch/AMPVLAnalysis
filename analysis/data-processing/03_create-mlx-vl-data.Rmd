@@ -60,6 +60,7 @@ amp_vl_all = adata_vl %>%
                  protocol, study_region_cat, contains("gmt"), nisolates, study, rx_code2)
 
 placebo_vl = filter(amp_vl_all, rx_code2 == "C") 
+vrc01_vl = filter(amp_vl_all, rx_code2 != "C") 
 
 ```
 
@@ -68,6 +69,7 @@ placebo_vl = filter(amp_vl_all, rx_code2 == "C")
 expect_equal(n_distinct(amp_vl_all$pub_id), 158)
 expect_equal(all(!is.na(amp_vl_all)), TRUE)
 expect_equal(n_distinct(placebo_vl$pub_id), 62)
+expect_equal(n_distinct(vrc01_vl$pub_id), 158- 62)
 
 ```
 
@@ -76,5 +78,8 @@ expect_equal(n_distinct(placebo_vl$pub_id), 62)
 write_csv(amp_vl_all, mlx_data_here("amp-mlx-vl.csv"))
 
 write_csv(placebo_vl, mlx_data_here("amp-mlx-vl-placebo.csv"))
+
+write_csv(vrc01_vl, mlx_data_here("amp-mlx-vl-vrc01.csv"))
+
 
 ```

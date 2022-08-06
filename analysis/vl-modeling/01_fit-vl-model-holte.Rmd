@@ -1,0 +1,670 @@
+---
+title: "Infection time assessment"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+Here, we fit the RV217 Holte models to the AMP participants. Except for the infection time parameters, all of the 
+fixed population parameters are fixed from the RSIF paper. For the omegas, there are three approaches: 1) fix all of the omegas, 2) refit the omegas, and 3) refit omegas with placebos only.
+
+```{r load-packages, echo = T, message=F,output=F, warning=F}
+knitr::opts_chunk$set(echo = F)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(lixoftConnectors)
+
+initializeLixoftConnectors(software = "monolix")
+theme_set(theme_bw() + theme(legend.position = "top"))
+options(scipen = 999)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+
+```
+
+```{r load-funs-data}
+
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-model-funs.R"))
+source(here("R", "mlx-envir-res.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "fix-parm-funs.R"))
+source(here("R", "mlx-plot-funs.R"))
+
+vl_dir_tag = function(x) paste0("VL/", x)
+vl_model_here = function(x, ...) mlx_model_here(vl_dir_tag(x), ...)
+
+rv217_fits = read_csv(mlx_data_here('rsif-timing-parms.csv'), col_types = cols())
+dan_pop_fits = read_csv(here('output/vl-analysis/populationParameters.txt'), col_types = cols()) %>%
+  select(parameter, value) %>% spread(parameter, value)
+
+demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+  distinct() %>%
+  left_join(rx_lab, by = "rx_code2")
+stopifnot(nrow(demo_merge) == 158)
+
+```
+
+
+```{r covariate-setup}
+# check_data("amp-mlx-vl.csv")
+
+vl_types = tribble(
+    ~var_name, ~type,
+    "pub_id", "id",
+    "TIME", "ignore",
+    "DV", "observation",
+    "DV_log", "ignore",
+    "fp_day", "ignore",
+    "days_fp", "TIME",
+    "tpf_est", "ignore",
+    "cens", "cens",
+    "limit", "limit",
+    "protocol", "catcov",
+    "study_region_cat", "catcov",
+    "gmt50ms", "ignore",
+    "gmt80ms", "ignore",
+    "gmt50ls", "ignore",
+    "gmt80ls", "ignore",
+    "gmt50mf", "ignore", 
+    "gmt80mf", "ignore",
+    "nisolates", "ignore",
+    "study", "ignore",
+    "rx_code2", "ignore"
+  ) 
+
+log10vl_types = vl_types
+log10vl_types[log10vl_types$var_name == "DV", ]$type = "ignore"
+log10vl_types[log10vl_types$var_name == "DV_log", ]$type = "observation"
+
+
+```
+
+# Model fitting
+
+model tag: "holte_vl"
+
+
+The major models:
+**All models refit infection time parameter and omega.**
+
+- RSIF, all fixed: holte_vl_corr
+- RSIF, all fixed correlation = 0: holte_vl
+- refit correlation: holte_vl_refitcorr
+  - Dan's model is this with initial conditions for correlations = 0 (I verified similar infection time draws but did not reproduce the fitting algorithm for this model)
+- refit omega: holte_vl_omega
+- refit omega and correlation: holte_vl_refitomegacorr
+
+Three sub-models:
+A) Fit using all (trt+placebo) participants (denoted _all)
+B) Fit using placebo only (denoted _placebo)
+C) Placebo model applied to vrc01 groups (denoted _vrc01)
+
+The outcome variable is vl ~ log normal.
+
+## Fixing all parameters (w/ correlations)
+
+```{r rsif-fixed-all-corr, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+# getPopulationParameterInformation()
+set_holte_parms(holte_parms = rv217_fits, est_corr_rsif = "FIXED")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_corr_all"))
+
+```
+
+```{r rsif-fixed-placebo-corr, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-placebo.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+# getPopulationParameterInformation()
+set_holte_parms(holte_parms = rv217_fits, est_corr_rsif = "FIXED")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_corr_placebo"))
+
+```
+
+```{r rsif-fixed-placebo-corr, eval = F}
+
+placebo_rsif = get_pop_ests(vl_dir_tag("holte_vl_corr_placebo")) %>%
+  select(parameter, value) %>% spread(parameter, value)
+  
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-vrc01.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = placebo_rsif, est_corr = "FIXED")
+setPopulationParameterInformation(
+  a = list(initialValue = placebo_rsif$a, method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+
+check = left_join(getPopulationParameterInformation(), 
+                                  gather(placebo_rsif), by = c("name" = "key"))
+check
+stopifnot(nrow(subset(check, 
+                        abs(initialValue - value) > 1e-4 &
+                          name != "a" &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_corr_placebo_vrc01"))
+
+```
+
+
+## Fixing all parameters (no correlations)
+
+```{r rsif-fixed-all, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+# getPopulationParameterInformation()
+set_holte_parms(holte_parms = rv217_fits)
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_all"))
+
+```
+
+
+```{r rsif-fixed-placebo, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-placebo.csv",
+  variable_types = vl_types,
+  initial_estimates = FALSE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = rv217_fits)
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_placebo"))
+
+```
+
+## Refitting correlations
+
+```{r rsif-fixed-all-refitcorr, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+# getPopulationParameterInformation()
+set_holte_parms(holte_parms = rv217_fits, est_corr_rsif = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_refitcorr_all"))
+
+```
+
+```{r rsif-fixed-placebo-refitcorr, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-placebo.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+# getPopulationParameterInformation()
+set_holte_parms(holte_parms = rv217_fits, est_corr_rsif = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_refitcorr_placebo"))
+
+```
+
+
+```{r rsif-refit-corr-trt, eval = F}
+
+placebo_refitcorr = get_pop_ests(vl_dir_tag("holte_vl_refitcorr_placebo")) %>%
+  select(parameter, value) %>% spread(parameter, value)
+  
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-vrc01.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = placebo_refitcorr, est_corr = "FIXED")
+setPopulationParameterInformation(
+  a = list(initialValue = placebo_refitcorr$a, method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+
+check = left_join(getPopulationParameterInformation(), 
+                                  gather(placebo_refitcorr), by = c("name" = "key"))
+check
+stopifnot(nrow(subset(check, 
+                        abs(initialValue - value) > 1e-4 &
+                          name != "a" &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_refitcorr_vrc01"))
+
+```
+
+## Reftting omegas
+
+```{r rsif-refit-omega-all, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_omega_all"))
+
+```
+
+```{r rsif-refit-omega-placebo, eval = F}
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-placebo.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+runScenario()
+get_pop_parms()
+
+save_project(vl_dir_tag("holte_vl_omega_placebo"))
+
+```
+
+```{r rsif-refit-omega--trt, eval = F}
+
+placebo_refitomega = get_pop_ests(vl_dir_tag("holte_vl_omega_placebo")) %>%
+  select(parameter, value) %>% spread(parameter, value)
+  
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-vrc01.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = placebo_refitomega)
+setPopulationParameterInformation(
+  a = list(initialValue = placebo_refitomega$a, method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+
+check = left_join(getPopulationParameterInformation(), 
+                                  gather(placebo_refitomega), by = c("name" = "key"))
+check
+stopifnot(nrow(subset(check, 
+                        abs(initialValue - value) > 1e-4 &
+                          name != "a" &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_refitomega_vrc01"))
+
+```
+
+## Refitting omega/correlations
+
+```{r rsif-refit-omegacorr-all, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE", est_corr_rsif = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_refitomegacorr_all"))
+
+```
+
+Started with the RV217 RSIF model with free omegas and correlation. Initial fits suggest the
+dI correlations are minor and poorly specified (high RSEs) so I remove all 3. After fixing the constant error 
+(because the se is always NaN) and refitting the omega dS was poorly specified (NaN, standard error). Then I tried
+linearization and that seemed to work well, none of the rses shrunk and omega dS se was estimated.
+
+```{r rsif-refit-omegacorr-placebo, eval = F}
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-placebo.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE", est_corr_rsif = "MLE")
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+setInitialEstimatesToLastEstimates()
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+setCorrelationBlocks(id = list(c("dS", "lBt0", "lp")))
+
+runScenario()
+get_pop_parms()
+
+setPopulationParameterInformation(
+  a = list(initialValue = getEstimatedPopulationParameters()[["a"]], method = "FIXED")
+  )
+runScenario()
+pre_linearization = get_pop_parms()
+
+scenario <- getScenario()
+scenario$linearization = TRUE
+setScenario(scenario)
+runScenario()
+post_lin = get_pop_parms()
+
+full_join(pre_linearization, post_lin, by = "parameter") %>%
+  select(parameter, sort(current_vars()))
+
+save_project(vl_dir_tag("holte_vl_refitomegacorr_placebo"))
+
+```
+
+```{r rsif-refit-omegacorr--trt, eval = F}
+
+placebo_refitomegacorr = get_pop_ests(vl_dir_tag("holte_vl_refitomegacorr_placebo")) %>%
+  select(parameter, value) %>% spread(parameter, value)
+  
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-vrc01.csv",
+  variable_types = vl_types,
+  initial_estimates = TRUE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = placebo_refitomegacorr)
+setPopulationParameterInformation(
+  a = list(initialValue = placebo_refitomegacorr$a, method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+setCorrelationBlocks(id = list(c("dS", "lBt0", "lp")))
+setPopulationParameterInformation(
+    corr_lBt0_dS = list(initialValue = placebo_refitomegacorr$corr_lBt0_dS, method = "FIXED"),
+    corr_lp_dS = list(initialValue = placebo_refitomegacorr$corr_lp_dS,  method = "FIXED"),
+    corr_lp_lBt0 = list(initialValue = placebo_refitomegacorr$corr_lp_lBt0,  method = "FIXED")
+  )
+
+stopifnot(nrow(subset(left_join(getPopulationParameterInformation(), 
+                                  gather(placebo_refitomegacorr), by = c("name" = "key")), 
+                        abs(initialValue - value) > 1e-4 &
+                          name != "a" &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+
+
+runScenario()
+save_project(vl_dir_tag("holte_vl_refitomegacorr_vrc01"))
+
+
+```
+
+
+## Rerun Dan
+
+```{r dan-lognormal, eval = F}
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = vl_types,
+  initial_estimates = FALSE,
+  obs_dist = "lognormal",
+  error_model = "constant"  
+  )
+
+set_holte_parms(holte_parms = dan_pop_fits, est_corr_rsif = "FIXED")
+setPopulationParameterInformation(
+  a = list(initialValue = log(10^dan_pop_fits$a), method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+getPopulationParameterInformation()
+
+# get initial estimates w/ simulated annealing on
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_dan_lognormal"))
+
+```
+
+
+```{r dan-reproduce, eval = F}
+log10vl_types_dan = log10vl_types
+log10vl_types_dan[log10vl_types_dan$var_name == "limit", ]$type = "ignore"
+
+amp_recipe(
+  model_text_file = "2_Holte_Model.txt",
+  data_file = "amp-mlx-vl.csv",
+  variable_types = log10vl_types_dan,
+  initial_estimates = FALSE,
+  obs_dist = "normal",
+  error_model = "constant"  
+  )
+setObservationDistribution(DV_log = "normal")
+setErrorModel(DV_log = "constant")
+
+set_holte_parms(holte_parms = dan_pop_fits, est_corr_rsif = "FIXED")
+setPopulationParameterInformation(
+  a = list(initialValue = dan_pop_fits$a, method = "FIXED"),
+  initT_pop = list(method = "FIXED"),
+  omega_initT = list(method = "FIXED")
+  )
+getPopulationParameterInformation()
+
+runScenario()
+
+save_project(vl_dir_tag("holte_vl_dan_rerun"))
+
+```
+

@@ -32,7 +32,7 @@ get_indiv_fits = function(project_name, outcome_name = "DV"){
 
 get_indiv_parms = function(project_name){
   read_csv(file.path(mlx_model_here(project_name),
-                     "/IndividualParameters/estimatedIndividualParameters.txt"),
+                     "IndividualParameters/estimatedIndividualParameters.txt"),
            col_types = cols()) %>%
     dplyr::select(id, contains("_")) # this handles issues with covariate typing
 }

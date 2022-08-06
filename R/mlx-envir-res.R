@@ -70,13 +70,15 @@ get_pop_parms <- function(project_name = NULL){
 
   if(is.null(getEstimatedStandardErrors())) return(estimates)
   if(!is.null(getEstimatedLogLikelihood())) {
-    log_lik = getEstimatedLogLikelihood()$importanceSampling %>%
+    mlx_ll = getEstimatedLogLikelihood()
+    log_lik = mlx_ll[[names(mlx_ll)]] %>%
       as_tibble() %>%
       gather() %>%
       rename(parameter = key, estimate = value)
   } else log_lik = NULL
 
-  standard_errors <- getEstimatedStandardErrors()$stochasticApproximation %>%
+  mlx_se =  getEstimatedStandardErrors()
+  standard_errors <-  mlx_se[[names(mlx_se)]] %>%
     dplyr::select(-rse) %>%
     mutate(se = as.numeric(se))
 
