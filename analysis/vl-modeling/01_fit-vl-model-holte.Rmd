@@ -100,7 +100,7 @@ model tag: "holte_vl"
 
 
 The major models:
-**All models refit infection time parameter and omega.**
+**All models refit infection time parameter and omega (for time).**
 
 - RSIF, all fixed: holte_vl_corr
 - RSIF, all fixed correlation = 0: holte_vl
@@ -111,8 +111,8 @@ The major models:
 
 Three sub-models:
 A) Fit using all (trt+placebo) participants (denoted _all)
-B) Fit using placebo only (denoted _placebo)
-C) Placebo model applied to vrc01 groups (denoted _vrc01)
+B1) Fit using placebo only (denoted _placebo)
+B2) Placebo model applied to vrc01 groups (denoted _vrc01)
 
 The outcome variable is vl ~ log normal.
 
@@ -182,7 +182,7 @@ save_project(vl_dir_tag("holte_vl_corr_placebo"))
 
 ```
 
-```{r rsif-fixed-placebo-corr, eval = F}
+```{r rsif-fixed-vrc01-corr, eval = F}
 
 placebo_rsif = get_pop_ests(vl_dir_tag("holte_vl_corr_placebo")) %>%
   select(parameter, value) %>% spread(parameter, value)
@@ -215,10 +215,9 @@ stopifnot(nrow(subset(check,
   
 runScenario()
 
-save_project(vl_dir_tag("holte_vl_corr_placebo_vrc01"))
+save_project(vl_dir_tag("holte_vl_corr_vrc01"))
 
 ```
-
 
 ## Fixing all parameters (no correlations)
 
@@ -483,7 +482,7 @@ stopifnot(nrow(subset(check,
   
 runScenario()
 
-save_project(vl_dir_tag("holte_vl_refitomega_vrc01"))
+save_project(vl_dir_tag("holte_vl_omega_vrc01"))
 
 ```
 
@@ -606,7 +605,6 @@ stopifnot(nrow(subset(left_join(getPopulationParameterInformation(),
 
 runScenario()
 save_project(vl_dir_tag("holte_vl_refitomegacorr_vrc01"))
-
 
 ```
 

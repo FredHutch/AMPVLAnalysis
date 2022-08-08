@@ -50,22 +50,28 @@ stopifnot(nrow(demo_merge) == 158)
 placebo_models = tribble(
   ~model_label, ~model_location,
   "RSIF-placebo", "holte_vl_corr_placebo",
-  "RSIF_nocorr-placebo", "holte_vl_placebo",
+  #"RSIF_nocorr-placebo", "holte_vl_placebo",
   "holte_refit_omega-placebo", "holte_vl_omega_placebo",
   "holte_refit_corr-placebo", "holte_vl_refitcorr_placebo",
   "holte_refit_omega_corr-placebo", "holte_vl_refitomegacorr_placebo", 
 )
 
+vrc01_models = tribble(
+  ~model_label, ~model_location,
+  "RSIF-vrc01", "holte_vl_corr_vrc01",
+  #"RSIF_nocorr-vrc01", "holte_vl_vrc01",
+  "holte_refit_omega-vrc01", "holte_vl_omega_vrc01",
+  "holte_refit_corr-vrc01", "holte_vl_refitcorr_vrc01",
+  "holte_refit_omega_corr-vrc01", "holte_vl_refitomegacorr_vrc01", 
+)
+
 holte_models = tribble(
   ~model_label, ~model_location,
   "RSIF", "holte_vl_corr_all",
-  "RSIF_nocorr", "holte_vl_all",
+  #"RSIF_nocorr", "holte_vl_all",
   "holte_refit_omega", "holte_vl_omega_all",
   "holte_refit_corr", "holte_vl_refitcorr_all",
   "holte_refit_omega_corr", "holte_vl_refitomegacorr_all"
-  #"holte_refit_omega_placebo", "holte_vl_omega_placebo",
-  #"holte_dan_lognormal", "holte_vl_dan_lognormal",
-  #"holte_dan_rerun", "holte_vl_dan_rerun"
 )
 
 parameter_labels = tribble(
@@ -86,14 +92,26 @@ dan_holte_est = read_csv(here("output/vl-analysis/estimatedIndividualParameters.
   select(pub_id = id, model, contains("_mode"), -V0_mode, -aS_mode) %>%
   left_join(demo_merge, by = "pub_id")
 
+paul_times = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  filter(vl_model_flag) %>%
+  mutate(model = "Poisson-fitter", tinf_est = fp_day - tpf_day) %>%
+  select(pub_id, model, tinf_est, rx_code2)
+
 pop_ests = stack_model_ests(vl_dir_tag(holte_models$model_location),  
                             holte_models$model_label) 
  
-indiv_vl_parms_fit_placebo = stack_indiv_parms(vl_dir_tag(placebo_models$model_location), placebo_models$model_label) %>%
+indiv_vl_parms_placebo = stack_indiv_parms(vl_dir_tag(placebo_models$model_location),
+                                           placebo_models$model_label) %>%
   select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
   left_join(demo_merge, by = "pub_id") 
 
-indiv_vl_parms = stack_indiv_parms(vl_dir_tag(holte_models$model_location), holte_models$model_label) %>%
+indiv_vl_parms_vrc01 = stack_indiv_parms(vl_dir_tag(vrc01_models$model_location), 
+                                         vrc01_models$model_label) %>%
+  select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
+  left_join(demo_merge, by = "pub_id") 
+
+indiv_vl_parms_all = stack_indiv_parms(vl_dir_tag(holte_models$model_location), 
+                                       holte_models$model_label) %>%
   select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
   left_join(demo_merge, by = "pub_id") 
 
@@ -136,17 +154,89 @@ Consistency between models among 1., 2 and 3
 Consistence between models/fits between 1 and 2; and 2 and 3 among placebo or treated
 
 ```{r}
-paul_times = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
-  filter(vl_model_flag) %>%
-  mutate(model = "Poisson-fitter", tinf_est = fp_day - tpf_day) %>%
-  select(pub_id, model, tinf_est, rx_code2)
+
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  mutate(model_data = "placebo_trained", model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  bind_rows(mutate(subset(indiv_vl_parms_all), model_data = "full_model")) %>%
+  select(pub_id, tinf_est = initT_mode, model, model_data) %>%
+  ggplot(aes(x = model_data, y = tinf_est)) +
+  geom_boxplot() +
+  ylab("est. inf day (prior to first positive)") +
+  geom_path(aes(group = pub_id), alpha = 0.15) +
+  facet_wrap( ~ model, nrow = 1)
+
+
+```
+
+### Consistency within trt groups
+
+```{r}
+
+indiv_vl_parms_placebo %>%
+  mutate(model_data = "placebo_only", model = str_remove(model, "-placebo")) %>%
+  bind_rows(mutate(subset(indiv_vl_parms_all, rx_code2 == "C"), model_data = "full_model")) %>%
+  select(pub_id, tinf_est = initT_mode, model, model_data) %>%
+  ggplot(aes(x = model_data, y = tinf_est)) +
+  geom_boxplot() +
+  ylab("est. inf day (prior to first positive)") +
+  geom_path(aes(group = pub_id), alpha = 0.15) +
+  facet_wrap( ~ model)
+
+indiv_vl_parms_placebo %>% 
+  bind_rows(subset(indiv_vl_parms_all, rx_code2 == "C")) %>%
+  select(pub_id, tinf_est = initT_mode, model) %>%
+  pivot_wider(values_from = tinf_est, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "First pos - inf time",
+          ylab = "First pos - inf time")
+
+```
+
+```{r}
+
+indiv_vl_parms_vrc01 %>%
+  mutate(model_data = "placebo_trained", model = str_remove(model, "-vrc01")) %>%
+  bind_rows(mutate(subset(indiv_vl_parms_all, rx_code2 != "C"), model_data = "full_trained")) %>%
+  select(pub_id, tinf_est = initT_mode, model, model_data) %>%
+  ggplot(aes(x = model_data, y = tinf_est)) +
+  geom_boxplot() +
+  ylab("est. inf day (prior to first positive)") +
+  geom_path(aes(group = pub_id), alpha = 0.15) +
+  facet_wrap( ~ model)
+
+indiv_vl_parms_vrc01 %>% 
+  bind_rows(subset(indiv_vl_parms_all, rx_code2 != "C")) %>%
+  select(pub_id, tinf_est = initT_mode, model) %>%
+  pivot_wider(values_from = tinf_est, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "First pos - inf time",
+          ylab = "First pos - inf time")
 
 ```
 
 
+```{r}
+
+
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  bind_rows(dan_holte_est) %>%
+  dplyr::select(pub_id, tinf_est = initT_mode, model) %>%
+  bind_rows(select(paul_times, -rx_code2)) %>%
+  pivot_wider(values_from = tinf_est, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "First pos - inf time",
+          ylab = "First pos - inf time")
+
+```
+
+## Generate fits
+
 ```{r inf-time-dist-placebo}
 
-indiv_vl_parms_fit_placebo %>%
+indiv_vl_parms_placebo %>%
   bind_rows(subset(dan_holte_est, rx_code2 == "C")) %>%
   select(pub_id, tinf_est = initT_mode, model) %>%
   bind_rows( bind_rows(subset(paul_times, rx_code2 == "C"))) %>%
@@ -172,15 +262,6 @@ indiv_vl_parms %>%
 
 ```{r tinf-correlations-placebo}
 
-indiv_vl_parms %>% 
-  bind_rows(subset(dan_holte_est, rx_code2 == "C")) %>%
-  select(pub_id, tinf_est = initT_mode, model) %>%
-  bind_rows(select(subset(paul_times, rx_code2 == "C"), -rx_code2)) %>%
-  pivot_wider(values_from = tinf_est, names_from = model) %>%
-  dplyr::select(-pub_id) %>% 
-  ggpairs(progress = F, xlab = "First pos - inf time",
-          ylab = "First pos - inf time")
-
 ```
 
 
@@ -194,54 +275,6 @@ indiv_vl_parms %>%
   dplyr::select(-pub_id) %>% 
   ggpairs(progress = F, xlab = "First pos - inf time",
           ylab = "First pos - inf time")
-
-```
-
-
-
-```{r results-setup}
-
-
-
-parameter_labels = tribble(
-  ~parm, ~parameter_label,
-  "aS", "alphaS",
-  "log10_dS", "log10(deltaS)",
-  "dS", "deltaS",
-  "lBt0", "log10(beta)",
-  "dI", "kappa",
-  "log10_dI", "log10(kappa)",
-  "n", "h",
-  "lp", "log10(pi)",
-  "initT", "First pos.- Inf. day"
-)
-
-time_models = list_mlx_models("viralload/placebo-model-search/") %>%
-  str_subset("_t0") %>%
-  c(list_mlx_models(time_fit_loc()))
-
-placebo_ids = get_indiv_parms(time_models[[1]]) %>% pull(id)
-
-paul_times = read_csv(mlx_data_here("amp-vl-placebo.csv"), col_types = cols()) %>%
-  dplyr::distinct(id = pub_id, tinf_est) %>%
-  mutate(model_label = "Paul_est")
-
-time_model_names = tribble(
-  ~model, ~model_label,
-  "all_fixed_t0", "TCL_fixed",
-  "all_free_t0", "TCL_free",
-  "fixed_RSIF_placebo_t0", "Holte_RSIF_fixed",
-  "fixed_RSIF_t0", "Holte_RSIF_fixed_all",
-  "refit_RSIF_placebo_t0", "Holte_RSIF_free",
-  "refit_RSIF_t0", "Holte_RSIF_free_all"
-)
-
-
-time_ests = stack_indiv_parms(time_models) %>%
-  dplyr::select(id, tinf_est = initT_mode, model) %>%
-  left_join(time_model_names, by = "model") %>%
-  bind_rows(paul_times) %>%
-  mutate(placebo = id %in% placebo_ids)
 
 ```
 
