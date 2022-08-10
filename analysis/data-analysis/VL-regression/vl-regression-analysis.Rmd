@@ -102,9 +102,12 @@ vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>
 
 demo_dat = distinct(vl_data, pub_id, trt_ic80, ic80gte1, protocol_full, rx_lab, rx_pool)
 
-dan_summary = read_csv(here("output/other", "dan-calc-allmetrics.csv")) %>%
-  janitor::clean_names() %>%
-  left_join(demo_dat, by = c("pid" = "pub_id"))
+vl_mod_summary = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
+    rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
+    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)")
+  )
 
 # this would signify a data change
 stopifnot(nrow(vl_data) == 880)
@@ -134,7 +137,6 @@ avg_vl = vl_data %>%
   mutate(isSA703 = study_region_code == 1,
     isNSA703 = study_region_code == 2,
     isSwiss704 = study_region_code == 3)
-
 
 set_point = vl_data %>% 
   dplyr::filter(days_fp >= 0) %>%
@@ -204,15 +206,17 @@ set_point %>%
 
 ```
 
-```{r vl-vl-allgrp--paper, fig.height = 9}
+```{r vl-allgrp-paper, fig.height = 9}
 
 set_point %>%
   mutate(metric_title = "Obs. set point log10 VL") %>%
   bind_rows(avg_vl) %>%
   #dplyr::filter(measurements > 1) %>%
   bind_rows(first_positive) %>%
-  bind_rows(mutate(dan_summary, log10vl = model_set_pt, 
+  bind_rows(mutate(vl_mod_summary, log10vl = model_setpt, 
                    metric_title = "Model set point log10 VL")) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = geo_auc_3mo, 
+                   metric_title = "Model 3-mo mean log10 VL")) %>%
   ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
   geom_boxplot() +
   geom_jitter(height = 0, width = 0.1) +
@@ -229,7 +233,9 @@ set_point %>%
 avg_vl %>%
   #dplyr::filter(measurements > 1) %>%
   bind_rows(first_positive) %>%
-  bind_rows(mutate(dan_summary, log10vl = model_set_pt, 
+  bind_rows(mutate(vl_mod_summary, log10vl = geo_auc_3mo, 
+                   metric_title = "Model 3-mo mean log10 VL")) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = model_setpt, 
                    metric_title = "Model set point log10 VL")) %>%
   ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
   geom_boxplot(width = 0.45) +
@@ -426,7 +432,6 @@ plot_grid(plotlist = fp_contrast_pls, ncol = 1)
 
 ```
 
-
 # Set point
 
 ```{r set-point-obs}
@@ -439,8 +444,8 @@ plot_grid(plotlist = fp_contrast_pls, ncol = 1)
 
 set_point %>%
   rename(obs_set_pt = log10vl) %>%
-  left_join(dan_summary, by = c("pub_id" = "pid")) %>%
-  ggplot(aes(x = obs_set_pt, y = model_set_pt)) +
+  left_join(vl_mod_summary, by = "pub_id") %>%
+  ggplot(aes(x = obs_set_pt, y = model_setpt)) +
   geom_point() +
   coord_equal(xlim = c(0.5, 7.1), ylim = c(0.5, 7.1)) +
   geom_abline()
@@ -454,7 +459,7 @@ set_point %>%
 # hacky way of keeping model variables from first positive analysis
 set_point_model = first_positive %>%
   select(-log10vl) %>%
-  left_join(select(dan_summary, pub_id = pid, log10vl = model_set_pt), by = "pub_id") %>%
+  left_join(select(vl_mod_summary, pub_id, log10vl = model_setpt), by = "pub_id") %>%
   filter(!is.na(log10vl))
 
 stopifnot(nrow(set_point_model) == 158)
