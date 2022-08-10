@@ -1,0 +1,313 @@
+---
+title: "Results from final Holte model (unadjusted analysis)"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+Using the final unadjusted model, save the key parameters, R0, calculate key model sim results (AUC, set point, upslope).
+
+Methods:
+
+The following summaries are calculated from model simulations:
+
+- peak: maximum log10vl
+- peak day
+- 3-mo setpoint: avg log10vl betweens days 90 and 100
+- final setpoint: avg log10vl between days 950 and 1000 (not for analysis)
+- 3-month AUC/t: auc of vl through day 90 (linear up, log down method), divided by 90
+- 3-month geometric AUC: auc of log10 vl through day 90 divided by 90 (trapezoid)
+- upslope: max slope of vl rise between days 0 and (5, 21)
+- upslope R0: (1+upslope/dI):  (Ribeiro, PMC2876646)
+- 'unadjusted' R0: beta * pi * aS / (dS * dI * 23)
+
+```{r load-packages, echo = T, message=F,output=F, warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+# library(pkr) use but dont load
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "rxode-funs.R"))
+source(here("models", "rxode-models", "rxode-models.R"))
+
+knitr::opts_chunk$set(dev = c("png", "pdf"))
+
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
+theme_set(theme_bw() + theme(legend.position = "top"))
+options(scipen = 999)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+rx_lab_short = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat_short = c("Plac.", "10mg/kg", "30mg/kg")
+)
+
+rx_lab_pool = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat_pool = c("Placebo", "VRC01 (Pooled)", "VRC01 (Pooled)")
+)
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+
+save_shared_folder = T
+
+```
+
+```{r load-data}
+
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
+
+demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+  distinct() %>%
+  left_join(rx_lab, by = "rx_code2") %>%
+  left_join(time_data, by = "pub_id")
+
+stopifnot(nrow(demo_merge) == 158)
+
+
+placebo_vl_parms = get_indiv_parms("VL/holte_vl_refitcorr_placebo")
+vrc01_vl_parms = get_indiv_parms("VL/holte_vl_refitcorr_vrc01")
+
+vl_parms = bind_rows(placebo_vl_parms, vrc01_vl_parms) %>%
+  select(pub_id = id, contains("_mode"), study_region_cat) %>%
+  left_join(demo_merge, by = "pub_id") 
+
+stopifnot(nrow(vl_parms) == 158)
+stopifnot(all(!is.na(vl_parms)))
+
+mlx_model_fits = get_indiv_fits("VL/holte_vl_refitcorr_placebo") %>%
+  bind_rows(get_indiv_fits("VL/holte_vl_refitcorr_vrc01"))  %>%
+  rename(pub_id = ID) %>%
+  left_join(select(vl_parms, pub_id, initT_mode), by = "pub_id") %>%
+  mutate(
+    time_adj = time + initT_mode,
+    weeks = time_adj / 7, 
+    log10V = log10(pmax(0.01, indivPredMode)),
+         source = "mlx-sims") %>% 
+  filter(weeks >= 0)
+
+```
+
+```{r pop-parms}
+placebo_pop_ests = get_model_ests("VL/holte_vl_refitcorr_placebo") 
+
+placebo_pop_ests %>%
+  dplyr::mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    parameter = if_else(parameter == "initT_pop", "First pos.- Inf. day", parameter),
+    estimate_rse = if_else(!is.na(rse_sa),
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           stat_paste(value, digits = 2)) 
+    ) %>%
+  dplyr::filter(parameter != "V0_mode") %>%
+  dplyr::select(parameter, estimate_rse) %>% 
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Final model population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
+  kable_styling(full_width = F)
+
+```
+
+# Simulate VL
+
+```{r rxode-sim}
+
+vl_sims = map_df(1:nrow(vl_parms), function(i){
+  parm_set = vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(c(seq(0, 14, by = 0.1), 15:225), holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+  mutate(pub_id = parm_set$pub_id, weeks = time/7)
+})
+
+final_setpt = map_df(1:nrow(vl_parms), function(i){
+  parm_set = vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(950:1000, holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+    mutate(pub_id = parm_set$pub_id)
+}) %>%
+  group_by(pub_id) %>%
+  summarize(final_setpt = mean(log10V), .groups = "drop")
+
+```
+
+```{r spot-check}
+set.seed(15)
+test_ids = sample(vl_parms$pub_id, 25, replace = F)
+
+vl_sims %>%
+  mutate(source = "mlx-rxode") %>%
+  bind_rows(mlx_model_fits) %>%
+  dplyr::filter(pub_id %in% test_ids) %>%
+  ggplot(aes(x = weeks, y = log10V)) +
+  geom_line(aes(colour = source)) +
+  scale_shape_discrete(guide = "none") +
+  facet_wrap( ~ pub_id, nrow = 5, ncol = 5) +
+  coord_cartesian(xlim = c(-5, NA)) +
+  labs(y = "log10 VL") +
+  theme(legend.position = 'top') +
+  ggtitle("spot-check")
+
+```
+
+# Model Summary Measures
+
+```{r}
+
+calc_max_upslope = function(log10V, time, time_range = c(3, 21)){
+  mod_data = data.frame(y = log10V, x = time)
+  
+  betas = map_dbl(time_range[1]:time_range[2], function(i){
+    mod = lm(y ~ x, data = subset(mod_data, time <= i))
+    coef(mod)[['x']]
+  })
+  
+  max(betas)
+  
+}
+
+auc_end = 90
+
+vl_summary = vl_sims %>%
+  group_by(pub_id) %>%
+  summarize(
+    model_log10peak = max(log10V),
+    model_peak_day = round(time[which.max(log10V)]),
+    model_setpt = mean(log10V[time>= 90 & time <= 100]),
+    log10_auc_3mo = log10(
+      tail(
+        pkr::AUC(time[time <= auc_end], 10^log10V[time <= auc_end], down = "Log")[,1], 
+        1)/auc_end
+      ),
+    geo_auc_3mo = tail(pkr::AUC(time[time <= auc_end], log10V[time <= auc_end])[,1], 1)/auc_end,
+    #geo_auc_3mo_check = pracma::trapz(time[time <= 90], log10V[time <= 90]),
+    max_upslope = calc_max_upslope(log10V, time),
+    .groups = "drop"
+  ) %>%
+  left_join(final_setpt, by = "pub_id") %>%
+  left_join(vl_parms, by = "pub_id") %>%
+  mutate(
+    upslope_r0 = 1+max_upslope/dI_mode,
+    unadjusted_r0 = 10^lBt0_mode * 10^lp_mode * aS_mode / (dS_mode * dI_mode * 23 )
+    )
+
+stopifnot(all(!is.na(vl_summary)))
+stopifnot(nrow(vl_summary) == 158)
+
+```
+
+```{r plot-endpoints, fig.height = 8, fig.width = 7.5}
+
+key_measures = c("upslope_r0", "unadjusted_r0", "model_log10peak", "geo_auc_3mo", "log10_auc_3mo", "model_peak_day",
+                 "model_setpt")
+
+(vl_summary %>%
+  left_join(rx_lab_pool, by = "rx_code2") %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"))
+    ) %>%
+  select(pub_id, key_measures, ic80gte1, trt_cat_pool) %>%
+  pivot_longer(names_to = "measure", values_to = "value", cols = key_measures) %>%
+  ggplot(aes(x = trt_cat_pool, y = value, colour = ic80gte1)) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.75)) +
+  facet_wrap(~measure, strip.position = "left", scales = "free_y") +
+  ylab("") + xlab("") +
+  scale_color_manual("", values = ic80gte1_colors) +
+  strip_as_yaxis +
+    theme(legend.direction = "vertical")) %>%
+  lemon::reposition_legend(position =  'center',  panel = 'panel-3-2')
+
+
+```
+
+## Measure comparisons
+
+```{r setpt-comp}
+
+vl_summary %>%
+  dplyr::select(contains("setpt")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r auc-comp}
+
+vl_summary %>%
+  dplyr::select(contains("auc")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r r0-comp}
+
+vl_summary %>%
+  dplyr::select(contains("r0")) %>%
+  ggpairs(progress = F)
+
+```
+
+# Save final model
+
+```{r}
+
+write_csv(placebo_pop_ests, clean_data_here("unadjusted_model_vl_popparms.csv"))
+
+write_csv(vl_summary, clean_data_here("unadjusted_model_vl_summary.csv"))
+
+```
+
+```{r save-shared, eval = save_shared_folder}
+
+write_csv(tibble(), 
+           paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!VL MODEL UPDATED - ",
+                  Sys.Date()))
+
+write_csv(placebo_pop_ests, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_popparms.csv")
+
+write_csv(vl_summary, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_summary.csv")
+
+```
+
+
+```{r old-model-comp, eval = F}
+
+
+dan_summary = read_csv(here("output/other", "dan-calc-allmetrics.csv"), col_types = cols()) %>%
+  janitor::clean_names() %>%
+  select(pub_id = pid, set_pt, dan_setpt = model_set_pt, dan_avg = avg, dan_peak = model_peak, dan_peak_day = model_peak_day,
+         dan_upslope = model_upslope)
+
+test_data = full_join(dan_summary, vl_summary, by = "pub_id")
+
+
+ggplot(test_data, aes(x = dan_setpt, y = model_setpt)) + geom_point()
+
+ggplot(test_data, aes(x = set_pt, y = model_setpt)) + geom_point()
+
+ggplot(test_data, aes(x = dan_peak, y = model_log10peak)) + geom_point()
+
+ggplot(test_data, aes(x = dan_peak_day, y = model_peak_day)) + geom_point()
+
+ggplot(test_data, aes(x = dan_upslope, y = max_upslope)) + geom_point()
+
+ggplot(test_data, aes(x = dan_avg, y = log10_auc_3mo)) + geom_point()
+ggplot(test_data, aes(x = dan_avg, y = geo_auc_3mo)) + geom_point()
+
+```

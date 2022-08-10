@@ -1,4 +1,6 @@
 
+# models are stored in models/rxode-models
+
 create_theta = function(parm_tibble){
   parm_tibble %>%
     dplyr::select(parameter, value) %>%

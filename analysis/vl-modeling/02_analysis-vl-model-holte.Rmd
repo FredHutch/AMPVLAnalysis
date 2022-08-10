@@ -1,5 +1,5 @@
 ---
-title: "Infection time assessment"
+title: "Diagnositics and fits for the Holte model"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
 output: 
@@ -13,7 +13,7 @@ output:
 Here, we assess the RV217 Holte models to the AMP participants fit using various approaches in fit-vl-model-holte. 
 
 ```{r load-packages, echo = T, message=F,output=F, warning=F}
-knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(tidyverse)
 library(here)
@@ -35,23 +35,46 @@ rx_lab = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
+save_shared_folder = F
+
+```
+
+```{r load-data}
+
 demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
   dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
   distinct() %>%
   left_join(rx_lab, by = "rx_code2")
 stopifnot(nrow(demo_merge) == 158)
 
+dan_holte_est = read_csv(here("output/vl-analysis/estimatedIndividualParameters.txt"), col_types = cols()) %>%
+  mutate(model = "Dan-Holte") %>%
+  select(pub_id = id, model, contains("_mode"), -V0_mode, -aS_mode) %>%
+  left_join(demo_merge, by = "pub_id")
+
+dan_pop_parm =  read_csv(here("output/vl-analysis/populationParameters.txt"), col_types = cols())
+dan_pop_ll = read_csv(here("output/vl-analysis/logLikelihood.txt"), col_types = cols()) %>%
+                        rename(parameter = criteria, value = importanceSampling)
+dan_pop_est = bind_rows(dan_pop_parm, dan_pop_ll) %>%
+  mutate(model = "Dan")
+
+paul_times = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  filter(vl_model_flag) %>%
+  mutate(model = "Poisson-fitter", tinf_est = fp_day - tpf_day) %>%
+  select(pub_id, model, tinf_est, rx_code2)
+
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
+
 ```
 
-# Model evaluation
-
-```{r fit-model-setup}
+```{r mlx-data-setup}
 
 placebo_models = tribble(
   ~model_label, ~model_location,
   "RSIF-placebo", "holte_vl_corr_placebo",
   #"RSIF_nocorr-placebo", "holte_vl_placebo",
-  "holte_refit_omega-placebo", "holte_vl_omega_placebo",
+  "holte_refit_omega-placebo", "holte_vl_refitomega_placebo",
   "holte_refit_corr-placebo", "holte_vl_refitcorr_placebo",
   "holte_refit_omega_corr-placebo", "holte_vl_refitomegacorr_placebo", 
 )
@@ -60,7 +83,7 @@ vrc01_models = tribble(
   ~model_label, ~model_location,
   "RSIF-vrc01", "holte_vl_corr_vrc01",
   #"RSIF_nocorr-vrc01", "holte_vl_vrc01",
-  "holte_refit_omega-vrc01", "holte_vl_omega_vrc01",
+  "holte_refit_omega-vrc01", "holte_vl_refitomega_vrc01",
   "holte_refit_corr-vrc01", "holte_vl_refitcorr_vrc01",
   "holte_refit_omega_corr-vrc01", "holte_vl_refitomegacorr_vrc01", 
 )
@@ -69,7 +92,7 @@ holte_models = tribble(
   ~model_label, ~model_location,
   "RSIF", "holte_vl_corr_all",
   #"RSIF_nocorr", "holte_vl_all",
-  "holte_refit_omega", "holte_vl_omega_all",
+  "holte_refit_omega", "holte_vl_refitomega_all",
   "holte_refit_corr", "holte_vl_refitcorr_all",
   "holte_refit_omega_corr", "holte_vl_refitomegacorr_all"
 )
@@ -86,20 +109,21 @@ parameter_labels = tribble(
   "lp", "log10(pi)",
   "initT", "First pos.- Inf. day"
 )
+```
 
-dan_holte_est = read_csv(here("output/vl-analysis/estimatedIndividualParameters.txt"), col_types = cols()) %>%
-  mutate(model = "Dan-Holte") %>%
-  select(pub_id = id, model, contains("_mode"), -V0_mode, -aS_mode) %>%
-  left_join(demo_merge, by = "pub_id")
 
-paul_times = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
-  filter(vl_model_flag) %>%
-  mutate(model = "Poisson-fitter", tinf_est = fp_day - tpf_day) %>%
-  select(pub_id, model, tinf_est, rx_code2)
+```{r load-mlx-model-data}
 
 pop_ests = stack_model_ests(vl_dir_tag(holte_models$model_location),  
                             holte_models$model_label) 
- 
+
+placebo_pop_ests = stack_model_ests(vl_dir_tag(placebo_models$model_location),  
+                            placebo_models$model_label) 
+
+all_indiv_obs = get_indiv_preds(vl_dir_tag(holte_models$model_location[1])) %>%
+  rename(pub_id = ID) %>%
+  mutate(weeks = time/7)
+
 indiv_vl_parms_placebo = stack_indiv_parms(vl_dir_tag(placebo_models$model_location),
                                            placebo_models$model_label) %>%
   select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
@@ -115,36 +139,72 @@ indiv_vl_parms_all = stack_indiv_parms(vl_dir_tag(holte_models$model_location),
   select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
   left_join(demo_merge, by = "pub_id") 
 
+fits_placebo_train = stack_indiv_fits(vl_dir_tag(placebo_models$model_location),
+                                 placebo_models$model_label) %>%
+  bind_rows(stack_indiv_fits(vl_dir_tag(vrc01_models$model_location),
+                                 vrc01_models$model_label)
+           )%>%
+  mutate(weeks = time / 7, 
+         model_general = str_remove(str_split_fixed(model, "-", n = 2)[,1], "holte_")) %>%
+  rename(pub_id = ID) %>%
+  left_join(demo_merge, by = "pub_id") %>%
+  left_join(time_data, by = "pub_id")
+
+fits_pool = stack_indiv_fits(vl_dir_tag(holte_models$model_location),
+                                 holte_models$model_label) %>%
+  mutate(weeks = time / 7, 
+         model_general = str_remove(model, "holte_")) %>%
+  rename(pub_id = ID) %>%
+  left_join(demo_merge, by = "pub_id") %>%
+  left_join(time_data, by = "pub_id")
+
+
 ```
 
-## Population Parameters
+# Population Parameters
 
-```{r pop-ests}
+```{r placebo-pop-ests}
 
-pop_ests %>%
-  dplyr::mutate(parameter = if_else(parameter == "OFV", "LogLik", parameter)) %>%
-  dplyr::filter(parameter != "V0_pop") %>%
-  left_join(mutate(parameter_labels, parm = paste0(parm, "_pop")), by = c("parameter" = "parm")) %>%
-  mutate(
+placebo_pop_ests %>%
+  dplyr::mutate(
     parameter = if_else(parameter == "OFV", "LogLik", parameter),
-    parameter_label = if_else(is.na(parameter_label), "", parameter_label),
-    value = if_else(parameter == "dS_pop", value*10^4, value),
-    parameter = if_else(parameter == "dS_pop", "dS_pop x 10^-4", parameter),
+    parameter = if_else(parameter == "initT_pop", "First pos.- Inf. day", parameter),
+    model = str_remove(model, "holte_"),
     estimate_rse = if_else(!is.na(rse_sa),
                            stat_paste(value, abs(rse_sa), digits = 2),
-                           stat_paste(value, digits = 2)
-  )) %>%
-  dplyr::select(model, parameter_label, parameter, estimate_rse) %>% 
+                           stat_paste(value, digits = 2)) 
+    ) %>%
+  dplyr::filter(!str_detect(parameter, "_pop")) %>%
+  dplyr::select(model, parameter, estimate_rse) %>% 
   pivot_wider(values_from = estimate_rse, names_from = model)  %>%
-  #dplyr::select(parameter_label, parameter, contains("omega"), contains("refit")) %>%
-  arrange(desc(parameter_label)) %>%
   kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
-        caption = "Population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
+        caption = "Placebo-trained model population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
   kable_styling(full_width = F)
 
 ```
 
-## Evaluate infection times
+```{r pooledpop-ests}
+
+pop_ests %>%
+  bind_rows(dan_pop_est) %>%
+  dplyr::mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    parameter = if_else(parameter == "initT_pop", "First pos.- Inf. day", parameter),
+    model = str_remove(model, "holte_"),
+    estimate_rse = if_else(!is.na(rse_sa),
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           stat_paste(value, digits = 2)) 
+    ) %>%
+  dplyr::filter(!str_detect(parameter, "_pop")) %>%
+  dplyr::select(model, parameter, estimate_rse) %>% 
+  pivot_wider(values_from = estimate_rse, names_from = model)  %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Pooled model population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
+  kable_styling(full_width = F)
+
+```
+
+# Evaluate infection times
 
 1. fitted to placebo 
 2. two stage for vrc01
@@ -152,6 +212,8 @@ pop_ests %>%
 
 Consistency between models among 1., 2 and 3
 Consistence between models/fits between 1 and 2; and 2 and 3 among placebo or treated
+
+
 
 ```{r}
 
@@ -169,7 +231,7 @@ indiv_vl_parms_placebo %>%
 
 ```
 
-### Consistency within trt groups
+## Consistency within placebo groups
 
 ```{r}
 
@@ -179,9 +241,9 @@ indiv_vl_parms_placebo %>%
   select(pub_id, tinf_est = initT_mode, model, model_data) %>%
   ggplot(aes(x = model_data, y = tinf_est)) +
   geom_boxplot() +
-  ylab("est. inf day (prior to first positive)") +
+  ylab("Placebo est. inf day (prior to first positive)") +
   geom_path(aes(group = pub_id), alpha = 0.15) +
-  facet_wrap( ~ model)
+  facet_wrap( ~ model, nrow = 1)
 
 indiv_vl_parms_placebo %>% 
   bind_rows(subset(indiv_vl_parms_all, rx_code2 == "C")) %>%
@@ -193,6 +255,8 @@ indiv_vl_parms_placebo %>%
 
 ```
 
+## Consistency within vrc01 groups
+
 ```{r}
 
 indiv_vl_parms_vrc01 %>%
@@ -201,9 +265,9 @@ indiv_vl_parms_vrc01 %>%
   select(pub_id, tinf_est = initT_mode, model, model_data) %>%
   ggplot(aes(x = model_data, y = tinf_est)) +
   geom_boxplot() +
-  ylab("est. inf day (prior to first positive)") +
+  ylab("VRC01 est. inf day (prior to first positive)") +
   geom_path(aes(group = pub_id), alpha = 0.15) +
-  facet_wrap( ~ model)
+  facet_wrap( ~ model, nrow = 1)
 
 indiv_vl_parms_vrc01 %>% 
   bind_rows(subset(indiv_vl_parms_all, rx_code2 != "C")) %>%
@@ -216,8 +280,11 @@ indiv_vl_parms_vrc01 %>%
 ```
 
 
-```{r}
+## Correlation plots (placebo trained models)
 
+### Spearman (Default)
+
+```{r, fig.height=9, fig.width=9}
 
 indiv_vl_parms_placebo %>%
   bind_rows(indiv_vl_parms_vrc01) %>%
@@ -232,96 +299,7 @@ indiv_vl_parms_placebo %>%
 
 ```
 
-## Generate fits
-
-```{r inf-time-dist-placebo}
-
-indiv_vl_parms_placebo %>%
-  bind_rows(subset(dan_holte_est, rx_code2 == "C")) %>%
-  select(pub_id, tinf_est = initT_mode, model) %>%
-  bind_rows( bind_rows(subset(paul_times, rx_code2 == "C"))) %>%
-  ggplot(aes(x = model, y = tinf_est)) +
-  geom_boxplot() +
-  ylab("est. inf day (prior to first positive)") +
-  geom_path(aes(group = pub_id), alpha = 0.15)
-
-```
-
-```{r inf-time-dist}
-
-indiv_vl_parms %>%
-  bind_rows(dan_holte_est) %>%
-  select(pub_id, tinf_est = initT_mode, model) %>%
-  bind_rows(paul_times) %>%
-  ggplot(aes(x = model, y = tinf_est)) +
-  geom_boxplot() +
-  ylab("est. inf day (prior to first positive)") +
-  geom_path(aes(group = pub_id), alpha = 0.15)
-
-```
-
-```{r tinf-correlations-placebo}
-
-```
-
-
-```{r tinf-correlations}
-
-indiv_vl_parms %>% 
-  bind_rows(dan_holte_est) %>%
-  dplyr::select(pub_id, tinf_est = initT_mode, model) %>%
-  bind_rows(paul_times) %>%
-  pivot_wider(values_from = tinf_est, names_from = model) %>%
-  dplyr::select(-pub_id) %>% 
-  ggpairs(progress = F, xlab = "First pos - inf time",
-          ylab = "First pos - inf time")
-
-```
-
-
-```{r pop-fits}
-
-stack_model_ests(time_models) %>%
-  dplyr::mutate(parameter = if_else(parameter == "OFV", "LogLik", parameter)) %>%
-  dplyr::filter(parameter != "V0_pop") %>%
-  left_join(mutate(parameter_labels, parm = paste0(parm, "_pop")), by = c("parameter" = "parm")) %>%
-  left_join(time_model_names, by = "model") %>%
-  mutate(
-    parameter = if_else(parameter == "OFV", "LogLik", parameter),
-    parameter_label = if_else(is.na(parameter_label), "", parameter_label),
-    value = if_else(parameter == "dS_pop", value*10^4, value),
-    parameter = if_else(parameter == "dS_pop", "dS_pop x 10^-4", parameter),
-    estimate_rse = if_else(!is.na(rse_sa),
-                           stat_paste(value, abs(rse_sa), digits = 2),
-                           stat_paste(value, digits = 2)
-  )) %>%
-  dplyr::select(model_label, parameter_label, parameter, estimate_rse) %>% 
-  pivot_wider(values_from = estimate_rse, names_from = model_label)  %>%
-  #dplyr::select(parameter_label, parameter, contains("omega"), contains("refit")) %>%
-  arrange(desc(parameter_label)) %>%
-  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
-        caption = "Population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
-  kable_styling(full_width = F)
-
-```
-
-## Correlation plots
-
-#### Raw plot with spearman cor.
-
-```{r time-est, fig.height=9, fig.width=9, warning = F, message = F}
-time_ests %>%
-  dplyr::filter(placebo) %>%
-  dplyr::select(-model, -placebo) %>%
-  pivot_wider(values_from = tinf_est, names_from = model_label) %>%
-  dplyr::select(-id) %>% 
-  ggpairs(progress = F, xlab = "First pos - inf time",
-           ylab = "First pos - inf time") 
-
-```
-
-
-#### Same plot -  Lin's CCC displayed. Axes have common limits with 1:1 line (no TCL free, all = 15 days) .
+### Lin's CCC
 
 ```{r time-est-scaled, fig.height=9, fig.width=9, warning = F, message=F}
 my_custom_cor <- function(data, mapping, sizeRange = c(1, 5), ...) {
@@ -369,90 +347,196 @@ my_custom_smooth <- function(data, mapping, ...) {
 
 
 my_boxplot = function (data, mapping, ..., boxPlot = TRUE) {
-    ggplot(data = data, aes(y = 40))  + geom_boxplot(mapping, ..., width = 30) +
+    ggplot(data = data, aes(y = 50))  + geom_boxplot(mapping, ..., width = 15) +
     coord_flip()
 }
 
 suppressMessages({
-time_ests %>%
-  dplyr::filter(placebo & model_label != "TCL_free") %>%
-  dplyr::select(-model, -placebo) %>%
-  pivot_wider(values_from = tinf_est, names_from = model_label) %>%
-  dplyr::select(-id) %>% 
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  bind_rows(dan_holte_est) %>%
+  dplyr::select(pub_id, tinf_est = initT_mode, model) %>%
+  bind_rows(select(paul_times, -rx_code2)) %>%
+  pivot_wider(values_from = tinf_est, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
   ggpairs(upper = list(continuous = wrap(my_custom_cor)), 
           lower = list(continuous = my_custom_smooth),
           diag = list(continuous = my_boxplot),
           progress = F, xlab = "First pos - inf time",
            ylab = "First pos - inf time") +
-  scale_x_continuous(limits = c(2.5, 75)) +
-  scale_y_continuous(limits = c(2.5, 75))
+  scale_x_continuous(limits = c(4.5, 93)) +
+  scale_y_continuous(limits = c(4.5, 93))
 })
 
 ```
 
-## Individual trajectories
+# Correlation between models among VL parameters
 
-**colored by model, dots are the estimated infection time (t_det). Open black dot is Paul's estimate. Raw data subsetted to at least 100 weeks within first positive**
+## Log beta
 
-```{r indiv-traj-setup}
+```{r lbeta-corr, fig.height=9, fig.width=9}
 
-fits = stack_indiv_fits(time_models) %>%
-  mutate(weeks = time / 7) %>%
-  left_join(time_ests, by = c("model", "ID" = "id")) %>%
-  dplyr::filter(ID %in% placebo_ids & time >= -tinf_est)
-
-ipreds = stack_indiv_ests(time_models) %>%
-  mutate(weeks = time/7) %>%
-  dplyr::filter(ID %in% placebo_ids)
-
-```
-
-
-```{r traj-test-pl, include = F, eval = F}
-test_set = placebo_ids[1:8]
-
-test_fits = stack_indiv_fits(time_models) %>%
-  mutate(weeks = time / 7) %>%
-  left_join(time_ests, by = c("model", "ID" = "id")) %>%
-  dplyr::filter(ID %in% test_set & time >= -tinf_est)
-
-test_ipreds = stack_indiv_ests(time_models) %>%
-  mutate(weeks = time/7) %>%
-  dplyr::filter(ID %in% test_set)
-
-
-ggplot(test_fits, aes(x = time, y = log10(pmax(0.01, indivPredMode)))) +
-  geom_line(aes(colour = model_label)) +
-  geom_point(data = test_ipreds, aes(y = log10(DV), shape = as.factor(censored != 0))) +
-  geom_point(data = rename(dplyr::filter(time_ests, id %in% test_set & !is.na(model)), ID = id),
-             aes(x = -tinf_est, y = log10(0.01), colour = model_label)) +
-  geom_point(data = rename(dplyr::filter(paul_times, id %in% test_set), ID = id),
-             aes(x = -tinf_est, y = log10(0.01)), shape = 1) +  
-  scale_shape_discrete("Below LLoQ") +
-  facet_wrap(~ ID, scales = "free_x") +
-  labs(y = "log10 VL", colour = "") +
-  theme(legend.position = 'top')+ 
-  guides(shape = guide_legend(ncol = 1, nrow = 2))
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  bind_rows(dan_holte_est) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  dplyr::select(pub_id, lBt0_mode, model) %>%
+  pivot_wider(values_from = lBt0_mode, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "log10 beta",
+          ylab = "log10 beta")
 
 ```
 
+## Log burst size
 
-```{r indiv-pl}
-#| message = FALSE, warning=F,
-#| fig.width=10, fig.height=10,
+```{r lpi-corr, fig.height=9, fig.width=9}
 
-ggplot(fits, aes(x = time, y = log10(pmax(0.01, indivPredMode)))) +
-  geom_line(aes(colour = model_label)) +
-  geom_point(data = dplyr::filter(ipreds, time > -100),
-             aes(y = log10(DV), shape = as.factor(censored != 0))) +
-  geom_point(data = rename(dplyr::filter(time_ests, placebo & !is.na(model)), ID = id),
-             aes(x = -tinf_est, y = log10(0.01), colour = model_label)) +
-  geom_point(data = rename(dplyr::filter(paul_times, id %in% placebo_ids), ID = id),
-             aes(x = -tinf_est, y = log10(0.01)), shape = 1) +  
-  scale_shape_discrete("Below LLoQ") +
-  facet_wrap(~ ID, nrow = 9, ncol = 7, scales = "free_x") +
-  labs(y = "log10 VL", colour = "", x = "weeks") +
-  theme(legend.position = 'top', axis.text.x = element_text(size = 8)) + 
-  guides(shape = guide_legend(ncol = 1, nrow = 2))
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  bind_rows(dan_holte_est) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  dplyr::select(pub_id, lp_mode, model) %>%
+  pivot_wider(values_from = lp_mode, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "log10 pi",
+          ylab = "log10 pi")
 
 ```
+
+## Log S death rate
+
+Note: this was fit log-normal, and logged for this plot
+
+```{r dS-corr, fig.height=9, fig.width=9}
+
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  bind_rows(dan_holte_est) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  dplyr::select(pub_id, dS_mode, model) %>%
+  mutate(dS_mode = log10(dS_mode)) %>%
+  pivot_wider(values_from = dS_mode, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "log10 dS",
+          ylab = "log10 dS")
+
+```
+
+## I death rate
+
+```{r dI-corr, fig.height=9, fig.width=9}
+
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  bind_rows(dan_holte_est) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  dplyr::select(pub_id, dI_mode, model) %>%
+  pivot_wider(values_from = dI_mode, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "dI",
+          ylab = "dI")
+
+```
+
+##  holte power term (n)
+
+```{r n-corr, fig.height=9, fig.width=9}
+
+indiv_vl_parms_placebo %>%
+  bind_rows(indiv_vl_parms_vrc01) %>%
+  bind_rows(dan_holte_est) %>%
+  mutate(model = str_remove(str_remove(model, "-placebo"), "-vrc01")) %>%
+  dplyr::select(pub_id, n_mode, model) %>%
+  pivot_wider(values_from = n_mode, names_from = model) %>%
+  dplyr::select(-pub_id) %>% 
+  ggpairs(progress = F, xlab = "n",
+          ylab = "n")
+
+```
+
+# Correlation within parameters
+
+```{r parm-cor}
+
+parm_corr_plot = map(unique(indiv_vl_parms_placebo$model), function(i){
+  mod_title = str_remove(str_remove(str_remove(i, "-placebo"), "-vrc01"), "holte_")
+  indiv_vl_parms_placebo %>%
+    bind_rows(indiv_vl_parms_vrc01) %>%
+    filter(model == i) %>%
+    dplyr::select(contains("_mode")) %>%
+    ggpairs(progress = F, title = mod_title)
+})
+
+```
+
+```{r cor-pl-loop, fig.cap=unique(indiv_vl_parms_placebo$model), fig.height=9, fig.width=9}
+
+for(i in 1:length(unique(indiv_vl_parms_placebo$model))){
+  print(parm_corr_plot[[i]])
+}
+
+```
+
+```{r dan, fig.height=9, fig.width=9}
+
+
+dan_holte_est %>%
+  dplyr::select(contains("_mode")) %>%
+  ggpairs(progress = F, title = "Dan model")
+
+```
+
+# Generate fits
+
+```{r pooled-fits}
+
+indiv_plots = map(split(sort(unique(fits_pool$pub_id)),
+                         ceiling(seq_along(unique(fits_pool$pub_id))/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    fits_pool %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks, y = log10(pmax(10, indivPredMode)))) +
+                      geom_line(aes(colour = model_general)) +
+                      geom_point(data = obs_dat,
+                                 aes(y = log10(DV), shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/vl-modeling/pool-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_plots, nrow=1, ncol=1))
+
+```
+
+```{r trained-fits}
+
+indiv_train_plots = map(split(sort(unique(fits_placebo_train$pub_id)),
+                         ceiling(seq_along(unique(fits_placebo_train$pub_id))/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    fits_placebo_train %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks, y = log10(pmax(10, indivPredMode)))) +
+                      geom_line(aes(colour = model_general)) +
+                      geom_point(data = obs_dat,
+                                 aes(y = log10(DV), shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/vl-modeling/placebo-train-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_train_plots, nrow=1, ncol=1))
+
+```
+

@@ -2,13 +2,16 @@
 
 get_model_ests = function(project_name){
   pop_parm_res = get_pop_ests(project_name)
+  if("se_lin" %in% names(pop_parm_res)){
+    pop_parm_res = rename(pop_parm_res, se_sa = se_lin, rse_sa = rse_lin)
+  }
 
   loglik_res  = read_csv(here(mlx_model_here(project_name), "LogLikelihood", "logLikelihood.txt"),
                          col_types = cols()) %>%
     rename(
-      parameter = criteria,
-      value = importanceSampling
+      parameter = criteria
     )
+  names(loglik_res)[2] = "value"
   bind_rows(pop_parm_res, loglik_res)
 }
 

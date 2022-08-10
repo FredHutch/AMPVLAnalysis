@@ -1,5 +1,5 @@
 ---
-title: "Infection time assessment"
+title: "Fit RSIF Holte model to AMP data"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
 output: 
@@ -10,11 +10,10 @@ output:
 
 # Overview
 
-Here, we fit the RV217 Holte models to the AMP participants. Except for the infection time parameters, all of the 
-fixed population parameters are fixed from the RSIF paper. For the omegas, there are three approaches: 1) fix all of the omegas, 2) refit the omegas, and 3) refit omegas with placebos only.
+Here, we fit the RV217 Holte models to the AMP participants. Except for the infection time parameters, all of the fixed population parameters are fixed from the RSIF paper. The population parameters are never refit but the variance/correlations terms using different strategies.
 
 ```{r load-packages, echo = T, message=F,output=F, warning=F}
-knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(tidyverse)
 library(here)
@@ -22,6 +21,12 @@ library(glue)
 library(kableExtra)
 library(GGally)
 library(lixoftConnectors)
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-model-funs.R"))
+source(here("R", "mlx-envir-res.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "fix-parm-funs.R"))
+source(here("R", "mlx-plot-funs.R"))
 
 initializeLixoftConnectors(software = "monolix")
 theme_set(theme_bw() + theme(legend.position = "top"))
@@ -31,21 +36,12 @@ rx_lab = tibble(
   rx_code2 = c("C", "T1", "T2"),
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
-
+vl_dir_tag = function(x) paste0("VL/", x)
+vl_model_here = function(x, ...) mlx_model_here(vl_dir_tag(x), ...)
 
 ```
 
 ```{r load-funs-data}
-
-source(here("R", "directory-funs.R"))
-source(here("R", "mlx-model-funs.R"))
-source(here("R", "mlx-envir-res.R"))
-source(here("R", "mlx-res-processing.R"))
-source(here("R", "fix-parm-funs.R"))
-source(here("R", "mlx-plot-funs.R"))
-
-vl_dir_tag = function(x) paste0("VL/", x)
-vl_model_here = function(x, ...) mlx_model_here(vl_dir_tag(x), ...)
 
 rv217_fits = read_csv(mlx_data_here('rsif-timing-parms.csv'), col_types = cols())
 dan_pop_fits = read_csv(here('output/vl-analysis/populationParameters.txt'), col_types = cols()) %>%
@@ -60,7 +56,7 @@ stopifnot(nrow(demo_merge) == 158)
 ```
 
 
-```{r covariate-setup}
+```{r vl-type-setup}
 # check_data("amp-mlx-vl.csv")
 
 vl_types = tribble(
@@ -109,10 +105,12 @@ The major models:
 - refit omega: holte_vl_omega
 - refit omega and correlation: holte_vl_refitomegacorr
 
-Three sub-models:
-A) Fit using all (trt+placebo) participants (denoted _all)
-B1) Fit using placebo only (denoted _placebo)
-B2) Placebo model applied to vrc01 groups (denoted _vrc01)
+Two sets of sub-models:
+
+- A) Pooled fit: Fit using all participants (denoted _all)
+- B) Placebo trained
+  - 1) Fit using placebo only (denoted _placebo)
+  - 2) Placebo model applied to vrc01 groups (denoted _vrc01)
 
 The outcome variable is vl ~ log normal.
 
@@ -221,6 +219,9 @@ save_project(vl_dir_tag("holte_vl_corr_vrc01"))
 
 ## Fixing all parameters (no correlations)
 
+Based on later diagnostics, this model has too tight variability between
+participants.
+
 ```{r rsif-fixed-all, eval = F}
 
 amp_recipe(
@@ -252,7 +253,6 @@ get_pop_parms()
 save_project(vl_dir_tag("holte_vl_all"))
 
 ```
-
 
 ```{r rsif-fixed-placebo, eval = F}
 
@@ -401,7 +401,7 @@ amp_recipe(
   error_model = "constant"  
   )
 
-set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE")
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE", est_corr_rsif = "FIXED")
 
 # get initial estimates w/ simulated annealing on
 runScenario()
@@ -416,7 +416,7 @@ setPopulationParameterInformation(
 runScenario()
 get_pop_parms()
 
-save_project(vl_dir_tag("holte_vl_omega_all"))
+save_project(vl_dir_tag("holte_vl_refitomega_all"))
 
 ```
 
@@ -430,7 +430,7 @@ amp_recipe(
   error_model = "constant"  
   )
 
-set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE")
+set_holte_parms(holte_parms = rv217_fits, est_omega = "MLE",  est_corr_rsif = "FIXED")
 
 # get initial estimates w/ simulated annealing on
 runScenario()
@@ -445,13 +445,13 @@ setPopulationParameterInformation(
 runScenario()
 get_pop_parms()
 
-save_project(vl_dir_tag("holte_vl_omega_placebo"))
+save_project(vl_dir_tag("holte_vl_refitomega_placebo"))
 
 ```
 
-```{r rsif-refit-omega--trt, eval = F}
+```{r rsif-refit-omega-trt, eval = F}
 
-placebo_refitomega = get_pop_ests(vl_dir_tag("holte_vl_omega_placebo")) %>%
+placebo_refitomega = get_pop_ests(vl_dir_tag("holte_vl_refitomega_placebo")) %>%
   select(parameter, value) %>% spread(parameter, value)
   
 amp_recipe(
@@ -463,7 +463,7 @@ amp_recipe(
   error_model = "constant"  
   )
 
-set_holte_parms(holte_parms = placebo_refitomega)
+set_holte_parms(holte_parms = placebo_refitomega, est_corr_rsif = "FIXED")
 setPopulationParameterInformation(
   a = list(initialValue = placebo_refitomega$a, method = "FIXED"),
   initT_pop = list(method = "FIXED"),
@@ -482,7 +482,7 @@ stopifnot(nrow(subset(check,
   
 runScenario()
 
-save_project(vl_dir_tag("holte_vl_omega_vrc01"))
+save_project(vl_dir_tag("holte_vl_refitomega_vrc01"))
 
 ```
 
@@ -518,9 +518,8 @@ save_project(vl_dir_tag("holte_vl_refitomegacorr_all"))
 ```
 
 Started with the RV217 RSIF model with free omegas and correlation. Initial fits suggest the
-dI correlations are minor and poorly specified (high RSEs) so I remove all 3. After fixing the constant error 
-(because the se is always NaN) and refitting the omega dS was poorly specified (NaN, standard error). Then I tried
-linearization and that seemed to work well, none of the rses shrunk and omega dS se was estimated.
+dI correlations are minor and poorly specified (high RSEs) so I remove all 3 (they also switched direction from negative to positive). After fixing the constant error 
+(because the se is always NaN) and refitting the omega dS was poorly specified (NaN, standard error). Then I tried linearization and that seemed to work well, none of the rses shrunk and omega dS se was estimated.
 
 ```{r rsif-refit-omegacorr-placebo, eval = F}
 
@@ -607,7 +606,6 @@ runScenario()
 save_project(vl_dir_tag("holte_vl_refitomegacorr_vrc01"))
 
 ```
-
 
 ## Rerun Dan
 
