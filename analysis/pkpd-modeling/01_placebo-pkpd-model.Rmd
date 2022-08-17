@@ -1,0 +1,515 @@
+---
+title: "Placebo Holte AMP Model"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+For this modeling we add an "indirect effect" covariate term on the beta parameter of the Holte model and finalize the trained
+viral load model for the VRC01 PKPD analysis. The covariate is the IC80 cutoff an 1 mcg/mL.
+
+From the 'spline' viral load modeling we select the best approach and refit accordingly with the adjusted-beta term.
+
+First, fit a separate model with covariate with the binary IC80 variable for each beta, kappa, pi, and n. In these models, the parameter with covariate has its population and omega parameter freed. Model significance is defined using a Wald test on the beta-coefficient (alpha = 0.1). After fitting all of these models, the model selection strategy is as follows:
+
+- unadjusted final if none significant.
+- if just one significant, than that is final adjusted placebo model.
+- if multiple non-n parameter significant, pick single model with lowest AIC
+- if n + others, would fit two covariate n + other parameter models, and pick lowest AIC from there (if not n alone)
+
+The final model was adjustment on log burst size.
+
+```{r load-packages, echo = T, message=F,output=F, warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(lixoftConnectors)
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-model-funs.R"))
+source(here("R", "mlx-envir-res.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "fix-parm-funs.R"))
+source(here("R", "mlx-plot-funs.R"))
+options(knitr.kable.NA = '')
+
+unadj_placebo_model_loc = "VL/holte_vl_refitcorr_placebo"
+
+adj_model_tag = function(x) paste0("VL-adjusted-placebo/", x)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+theme_set(theme_bw() + theme(legend.position = "top"))
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
+
+initializeLixoftConnectors(software = "monolix")
+options(scipen = 999)
+
+```
+
+```{r load-funs-data}
+
+demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+  distinct() %>%
+  left_join(rx_lab, by = "rx_code2")
+stopifnot(nrow(demo_merge) == 158)
+
+raw_data = read_csv(mlx_data_here("amp-mlx-vl-placebo.csv"), col_types = cols())
+mean_log10_ic80 = mean(log10(raw_data$gmt80ls))
+
+unadj_placebo_pop = read_csv(clean_data_here("unadjusted_model_vl_popparms.csv"), 
+                             col_types = cols())
+unadj_placebo_init = unadj_placebo_pop %>%
+  select(parameter, value) %>% spread(parameter, value)
+
+unadj_placebo_parms = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"),
+                               col_types = cols()) %>%
+  filter(rx_code2 == "C") %>%
+  select(pub_id, study_region_cat, contains("_mode"), contains("gmt"), upslope_r0_mode = upslope_r0, -V0_mode, -aS_mode) %>%
+  mutate(
+    ic80ls_gte1 = gmt80ls >= 1,
+    ic80ms_gte1 = gmt80ms >= 1,
+    ic80mf_gte1 = gmt80mf >= 1
+  )
+stopifnot(nrow(unadj_placebo_parms) == 62)
+
+placebo_unadj_parms_long = unadj_placebo_parms %>%
+  select(-contains("gmt")) %>%
+  pivot_longer(cols = contains("mode"), names_to = "parameter") %>%
+  pivot_longer(cols = contains("_gte1"), names_to = "ic80_type", values_to = "ic80_gte1") %>%
+  mutate(ic80_cat = case_when(
+    ic80_type == "ic80ls_gte1" ~ "least sensitive",
+    ic80_type == "ic80ms_gte1" ~ "most sensitive",
+    ic80_type == "ic80mf_gte1" ~ "most frequent"
+  )) 
+
+
+```
+
+# Indirect effect assessement unadjusted model
+
+The variability of participants with sensitive viruses does seem different. There are differences in medians
+across the parameters but not easily interpretable given the model non-linearity and the strong correlations.
+
+```{r}
+
+placebo_unadj_parms_long %>%
+  filter(ic80_cat == "least sensitive") %>%
+  ggplot(aes(x = factor(ic80_gte1), y = value)) +
+  geom_boxplot() +
+  geom_point() +
+  facet_wrap(~ parameter, scales = "free_y", strip.position = "left") +
+  labs(y = "", x = "IC80 >= 1") +
+  strip_as_yaxis
+
+
+```
+
+# Adjusted models - single covariate
+
+```{r vl-type-setup}
+# check_data("amp-mlx-vl-placebo.csv")
+
+vl_types = tribble(
+    ~var_name, ~type,
+    "pub_id", "id",
+    "TIME", "ignore",
+    "DV", "observation",
+    "DV_log", "ignore",
+    "fp_day", "ignore",
+    "days_fp", "TIME",
+    "tpf_est", "ignore",
+    "cens", "cens",
+    "limit", "limit",
+    "protocol", "catcov",
+    "study_region_cat", "catcov",
+    "gmt50ms", "ignore",
+    "gmt80ms", "contcov",
+    "gmt50ls", "ignore",
+    "gmt80ls", "contcov",
+    "gmt50mf", "ignore", 
+    "gmt80mf", "contcov",
+    "nisolates", "ignore",
+    "study", "ignore",
+    "rx_code2", "ignore"
+  ) 
+
+```
+
+```{r adj-model-setup, eval = F}
+
+#these functions are run everytime
+
+setup_adj_model = function(inits){
+  
+  amp_recipe(
+    model_text_file = "Holte_Model.txt",
+    data_file = "amp-mlx-vl-placebo.csv",
+    variable_types = vl_types,
+    initial_estimates = TRUE,
+    obs_dist = "lognormal",
+    error_model = "constant"  
+    )
+  
+  setPopulationParameterInformation(a = list(initialValue = inits$a, 
+                                              method = "FIXED"))
+  set_holte_parms(holte_parms = inits, est_omega = "FIXED", 
+                  est_corr_rsif = "FIXED",
+                  est_inf_time = "FIXED")
+  
+  # from mlx documentation: https://www.youtube.com/watch?v=H4WVkTXc45I
+  addContinuousTransformedCovariate(ic80lt1 = "1 - floor(min(gmt80ls, 1))")
+  addContinuousTransformedCovariate(log_ic80_ctr = "log10(gmt80ls) -  0.638")
+  
+  check = left_join(getPopulationParameterInformation(), 
+                                  gather(inits), by = c("name" = "key"))
+  check
+  stopifnot(nrow(subset(check, 
+                        abs(initialValue - value) > 1e-4 &
+                          !is.na(value) )
+                 ) == 0
+  )
+  
+  
+  getPopulationParameterInformation()
+    
+}
+
+initial_runs = function(){
+  # get initial estimates w/ simulated annealing on
+  runScenario()
+  setInitialEstimatesToLastEstimates()
+  set_project_settings(initial_estimates = FALSE)
+  runScenario()
+  get_pop_parms()
+}
+
+```
+
+```{r, eval = F}
+
+setup_adj_model(unadj_placebo_init)
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+getEstimatedLogLikelihood()
+
+```
+
+## Categorical IC80 model
+
+```{r adj-models, eval = F}
+
+#----------  beta - log beta viral infectivity ----------------
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(lBt0 = c(ic80lt1 = TRUE))
+setPopulationParameterInformation(
+  lBt0_pop = list(method = "MLE"), omega_lBt0 = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("adj-beta"))
+
+#----------  dI infected cell death rate ----------------
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(dI = c(ic80lt1 = TRUE))
+setPopulationParameterInformation(
+  dI_pop = list(method = "MLE"), omega_dI = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("adj-kappa"))
+
+#----------  pi - log burst size ---------------- 
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(lp = c(ic80lt1 = TRUE))
+setPopulationParameterInformation(
+  lp_pop = list(method = "MLE"), omega_lp = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("adj-pi"))
+
+
+#----------  n - holte power ---------------- 
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(n = c(ic80lt1 = TRUE))
+setPopulationParameterInformation(
+  n_pop = list(method = "MLE"), omega_n = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("adj-n"))
+
+```
+
+## Continuous IC80 model
+
+
+```{r cns-adj-models, eval = F}
+
+#----------  beta - log beta viral infectivity ----------------
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(lBt0 = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  omega_lBt0 = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("cns-beta"))
+
+#----------  dI infected cell death rate ----------------
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(dI = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  omega_dI = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("cns-kappa"))
+
+#----------  pi - log burst size ---------------- 
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  omega_lp = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(adj_model_tag("cns-pi"))
+
+
+#----------  n - holte power ---------------- 
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(n = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  omega_n = list(method = "MLE")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+#the log likelihood is worse than the unadjusted model but omega->0
+
+setIndividualParameterVariability(n = F)
+runScenario()
+get_pop_parms()
+
+#this was worse
+
+# redoing without the sim annealing step
+
+setup_adj_model(unadj_placebo_init)
+
+setCovariateModel(n = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  omega_n = list(method = "MLE")
+)
+
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+save_project(adj_model_tag("cns-n"))
+
+```
+
+# Results
+
+```{r setup}
+
+adj_models = paste0("adj-", c("beta", "pi", "kappa", "n"))
+adj_pop = stack_model_ests(adj_model_tag(adj_models))  
+
+cat_adj_indiv_parms = stack_indiv_parms(adj_model_tag(adj_models)) %>%
+  bind_rows(mutate(stack_indiv_parms(unadj_placebo_model_loc), model = "unadjusted")) %>%
+  select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
+  left_join(demo_merge, by = "pub_id") 
+
+cns_adj_models = paste0("cns-", c("beta", "pi", "kappa", "n"))
+cns_adj_pop = stack_model_ests(adj_model_tag(cns_adj_models))  
+
+cns_adj_indiv_parms = stack_indiv_parms(adj_model_tag(cns_adj_models)) %>%
+  bind_rows(mutate(stack_indiv_parms(unadj_placebo_model_loc), model = "unadjusted")) %>%
+  select(pub_id = id, model, study_region_cat, contains("_mode"), -V0_mode, -aS_mode) %>%
+  left_join(demo_merge, by = "pub_id") 
+
+cns_adj_fits = stack_indiv_fits(adj_model_tag(cns_adj_models)) %>%
+  bind_rows(mutate(stack_indiv_fits(unadj_placebo_model_loc), model = "unadjusted")) %>%
+  mutate(weeks = time / 7) %>%
+  rename(pub_id = ID) 
+
+all_indiv_obs = get_indiv_preds(unadj_placebo_model_loc) %>%
+  rename(pub_id = ID) %>%
+  mutate(weeks = time/7)
+
+```
+
+## Population parameters
+
+```{r cat-mods}
+
+unadj_placebo_pop %>%
+  mutate(model = "unadjusted") %>%
+  bind_rows(adj_pop) %>%
+  filter(!parameter %in% paste0(c("initT", "dS", "aS", "V0"), "_pop")) %>%
+  filter(!parameter %in% paste0("omega_", c("initT", "dS"))) %>%
+  filter(!str_detect(parameter, "corr") & parameter != "a") %>%
+  dplyr::mutate(
+    sort_var = case_when(
+      str_detect(parameter, "_pop") ~ str_split_fixed(parameter, "_", n = 2)[,1],
+      str_detect(parameter, "omega_") ~ str_split_fixed(parameter, "_", n = 2)[,2],
+      str_detect(parameter, "beta") ~ str_split_fixed(parameter, "_", n = 3)[,2],
+      TRUE ~ "x"
+    ),
+    sort_var = factor(sort_var, levels = c("lBt0", "lp", "dI", "n", "x")),
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    estimate_rse = if_else(!is.na(rse_sa),
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           if_else(model == "unadjusted" | 
+                                     !(str_detect(parameter, "omega_") |
+                                     str_detect(parameter, "_pop")), 
+                                   round_away_0(value, digits = 2, T), 
+                                   "")) 
+    ) %>%
+  dplyr::select(model, parameter, estimate_rse, sort_var) %>% 
+  pivot_wider(values_from = estimate_rse, names_from = model)  %>%
+  arrange(sort_var) %>%
+  select(-sort_var) %>%
+  write_csv(here("output/pkpd-modeling/adj-placebo-cat-IC80.csv")) %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Placebo-trained model population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r cns-res}
+
+unadj_placebo_pop %>%
+  mutate(model = "unadjusted") %>%
+  bind_rows(cns_adj_pop) %>%
+  filter(!parameter %in% paste0(c("initT", "dS", "aS", "V0"), "_pop")) %>%
+  filter(!parameter %in% paste0("omega_", c("initT", "dS"))) %>%
+  filter(!str_detect(parameter, "corr") & parameter != "a") %>%
+  dplyr::mutate(
+    sort_var = case_when(
+      str_detect(parameter, "_pop") ~ str_split_fixed(parameter, "_", n = 2)[,1],
+      str_detect(parameter, "omega_") ~ str_split_fixed(parameter, "_", n = 2)[,2],
+      str_detect(parameter, "beta") ~ str_split_fixed(parameter, "_", n = 3)[,2],
+      TRUE ~ "x"
+    ),
+    sort_var = factor(sort_var, levels = c("lBt0", "lp", "dI", "n", "x")),
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    estimate_rse = if_else(!is.na(rse_sa),
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           if_else(model == "unadjusted" | 
+                                     !(str_detect(parameter, "omega_") |
+                                     str_detect(parameter, "_pop")), 
+                                   round_away_0(value, digits = 2, T), 
+                                   "")) 
+    ) %>%
+  dplyr::select(model, parameter, estimate_rse, sort_var) %>% 
+  pivot_wider(values_from = estimate_rse, names_from = model)  %>%
+  arrange(sort_var) %>%
+  select(-sort_var) %>%
+  write_csv(here("output/pkpd-modeling/adj-placebo-cns-IC80.csv")) %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Placebo-trained model population parameters (%RSE). RSEs are not estimated for fixed parameters or the error term.") %>%
+  kable_styling(full_width = F)
+
+```
+
+## Individual parameters
+
+```{r cat}
+
+cat_adj_indiv_parms %>%
+  mutate(ic80ls_gte1 = factor(gmt80ls >= 1)) %>%
+  select(pub_id, model, ic80ls_gte1, lBt0_mode, lp_mode, dI_mode, n_mode) %>%
+  pivot_longer(names_to = "parameter", values_to = "log10_value", 
+               cols = c(lBt0_mode, lp_mode, dI_mode, n_mode)) %>%
+  ggplot(aes(x = ic80ls_gte1, y = log10_value)) +
+  geom_boxplot() +
+  facet_grid(parameter~model, scale = "free_y", switch = "y") +
+  ylab("") +
+  theme(strip.placement = "outside", strip.background.y = element_blank())
+
+```
+
+```{r cns}
+
+cns_adj_indiv_parms %>%
+  select(pub_id, model, gmt80ls, lBt0_mode, lp_mode, dI_mode, n_mode) %>%
+  pivot_longer(names_to = "parameter", values_to = "log10_value", 
+               cols = c(lBt0_mode, lp_mode, dI_mode, n_mode)) %>%
+  ggplot(aes(x = log10(gmt80ls), y = log10_value)) +
+  geom_point() +
+  facet_grid(parameter~model, scale = "free_y", switch = "y") +
+  ylab("") +
+  geom_smooth(formula = "y ~ x", method = "lm") +
+  theme(strip.placement = "outside", strip.background.y = element_blank())
+
+```
+
+## Fits 
+
+Only look at continuous covariate as the categorical was not significant.
+
+```{r cns-fits}
+
+indiv_plots = map(split(sort(unique(cns_adj_fits$pub_id)),
+                         ceiling(seq_along(unique(cns_adj_fits$pub_id))/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    cns_adj_fits %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks, y = log10(pmax(10, indivPredMode)))) +
+                      geom_line(aes(colour = model)) +
+                      geom_point(data = obs_dat,
+                                 aes(y = log10(DV), shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/pkpd-modeling/adj-placebo-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_plots, nrow=1, ncol=1))
+
+```
+

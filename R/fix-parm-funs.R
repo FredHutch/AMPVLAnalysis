@@ -33,6 +33,7 @@ set_holte_parms = function(holte_parms,
                            est = "FIXED", 
                            est_omega = "FIXED", 
                            est_corr_rsif = c("none", "FIXED", "MLE"),
+                           est_inf_time = "MLE",
                            dose = F, fix_inf_time = F){
   
   est_corr_rsif = match.arg(est_corr_rsif)
@@ -58,8 +59,8 @@ set_holte_parms = function(holte_parms,
   
   #infection time
   setPopulationParameterInformation(
-    initT_pop = list(initialValue = holte_parms$initT_pop, method = "MLE"),
-    omega_initT = list(initialValue = holte_parms$omega_initT, method = "MLE")
+    initT_pop = list(initialValue = holte_parms$initT_pop, method = est_inf_time),
+    omega_initT = list(initialValue = holte_parms$omega_initT, method = est_inf_time)
   )
   if(fix_inf_time) fix_holte_est_infection_times()
   
