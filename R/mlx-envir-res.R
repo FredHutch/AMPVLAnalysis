@@ -68,7 +68,9 @@ get_pop_parms <- function(project_name = NULL){
     rownames_to_column("parameter") %>%
     set_names("parameter", "estimate")
 
-  if(is.null(getEstimatedStandardErrors())) return(estimates)
+  if(is.null(suppressMessages({getEstimatedStandardErrors()})) & 
+     is.null(getEstimatedLogLikelihood())) return(estimates)
+     
   if(!is.null(getEstimatedLogLikelihood())) {
     mlx_ll = getEstimatedLogLikelihood()
     log_lik = mlx_ll[[names(mlx_ll)]] %>%
@@ -77,14 +79,16 @@ get_pop_parms <- function(project_name = NULL){
       rename(parameter = key, estimate = value)
   } else log_lik = NULL
 
-  mlx_se =  getEstimatedStandardErrors()
-  standard_errors <-  mlx_se[[names(mlx_se)]] %>%
-    dplyr::select(-rse) %>%
-    mutate(se = as.numeric(se))
-
-  full_join(estimates, standard_errors, by = "parameter") %>%
-    mutate(rse = se/estimate * 100) %>%
-    bind_rows(log_lik)
+  if(!is.null(suppressMessages({getEstimatedStandardErrors()}))) {
+    mlx_se =  getEstimatedStandardErrors()
+    standard_errors <-  mlx_se[[names(mlx_se)]] %>%
+      dplyr::select(-rse) %>%
+      mutate(se = as.numeric(se))
+    out = full_join(estimates, standard_errors, by = "parameter") %>%
+    mutate(rse = se/estimate * 100)
+  } else out = estimates
+    
+  bind_rows(out, log_lik)
 }
 
 

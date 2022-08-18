@@ -1,0 +1,54 @@
+DESCRIPTION:
+The PK model is a standard 2-cmpt model, the individual parameters are fixed.
+The VL initiation is done via dosing so the data contains infection time
+
+[LONGITUDINAL]
+
+input={aS, dS, lBt0, lp, dI, n, lrho, ic50, hill, Cl, V1, Q, V2}
+ic50 = {use=regressor}
+hill = {use=regressor}
+Cl = {use=regressor}
+V1 = {use=regressor}
+Q = {use=regressor}
+V2 = {use=regressor}
+
+PK:
+
+; Parameter transformations 
+
+g = 23          ; virus clearance rate [1/day]
+k = Cl/V1 
+k12 = Q/V1 
+k21 = Q/V2
+Bt0 = 10^(lBt0) ; infectivity rate
+pv = 10^(lp)
+rho = 10^lrho
+
+depot(target=C, adm = 1)
+depot(target=V, p = 1, adm = 2)
+depot(target=P, p = g/pv, adm = 2)
+
+EQUATION:
+odeType=stiff
+
+;initial conditions
+S_0 = aS/dS	;assumes no real T cell depletion in very early infection
+Per_0 = 0 
+
+;ODE PK
+ddt_C = -k12 * C + k21 * Per - k * C 
+ddt_Per = k12 * C - k21 * Per
+
+Cc = C/V1
+
+;ODE VL
+beta_adj = Bt0 * 1/(1+(Cc/(ic50*rho))^hill)
+
+ddt_S = aS - dS*S - beta_adj*S*V	;susceptible cells [cells/uL]
+ddt_P = beta_adj*S*V - dI*P*P^n		;productively infected cells [cells/uL]
+ddt_V = pv*P - g*V - beta_adj*S*V 	;productive virus [virus/uL]
+
+Vout = V * 1e3
+
+OUTPUT:
+output = Vout

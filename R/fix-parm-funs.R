@@ -29,20 +29,31 @@ fix_pk_parms_cc = function(){
 
 # ----------- VL ---------------
 
+check_init_assignment = function(input_parms, exclude_check = "a"){
+  x = getPopulationParameterInformation()
+  typo_check = left_join(x, gather(input_parms), by = c("name" = "key"))
+  stopifnot(nrow(subset(typo_check, 
+                        abs(initialValue - value) > 1e-4 &
+                          !name %in% exclude_check &
+                          !is.na(value) )
+  ) == 0
+  )
+  
+  x
+}
+
 set_holte_parms = function(holte_parms, 
                            est = "FIXED", 
                            est_omega = "FIXED", 
                            est_corr_rsif = c("none", "FIXED", "MLE"),
-                           est_inf_time = "MLE",
-                           dose = F, fix_inf_time = F){
+                           est_inf_time = c("MLE", "FIXED"),
+                           dose = F, 
+                           fix_inf_time = F){
   
   est_corr_rsif = match.arg(est_corr_rsif)
-
+  est_inf_time = match.arg(est_inf_time)
+  
   setIndividualParameterDistribution(lBt0 = "normal", lp = "normal")
-  if(dose) setIndividualParameterVariability(aS = F) else{
-    setIndividualParameterVariability(V0 = F, aS = F)
-    setPopulationParameterInformation(V0_pop = list(initialValue = holte_parms$V0_pop, method = "FIXED"))
-  }
   setPopulationParameterInformation(
     aS_pop = list(initialValue = holte_parms$aS_pop, method = est),
     dS_pop = list(initialValue = holte_parms$dS_pop, method = est),
@@ -57,26 +68,23 @@ set_holte_parms = function(holte_parms,
     omega_n = list(initialValue = holte_parms$omega_n, method = est_omega)    
   )
   
+  # dosing model means no V0 or infection time inputs
+  if(dose) setIndividualParameterVariability(aS = F) else{
+    setIndividualParameterVariability(V0 = F, aS = F)
+    setPopulationParameterInformation(V0_pop = list(initialValue = holte_parms$V0_pop, method = "FIXED"))
+    
   #infection time
   setPopulationParameterInformation(
     initT_pop = list(initialValue = holte_parms$initT_pop, method = est_inf_time),
     omega_initT = list(initialValue = holte_parms$omega_initT, method = est_inf_time)
-  )
+    )
+    
   if(fix_inf_time) fix_holte_est_infection_times()
-  
+  }
+
   # correlation - based on RSIF setup
   if(est_corr_rsif != "none") set_holte_corr_rsif(holte_parms, est_corr_rsif)
-  
-  x = getPopulationParameterInformation()
-  typo_check = left_join(x, gather(holte_parms), by = c("name" = "key"))
-  stopifnot(nrow(subset(typo_check, 
-                        abs(initialValue - value) > 1e-4 &
-                          name != "a" &
-                          !is.na(value) )
-                 ) == 0
-  )
-  
-  x
+  check_init_assignment(holte_parms)
 }
 
 fix_holte_est_infection_times = function(){

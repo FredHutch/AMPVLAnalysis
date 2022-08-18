@@ -1,0 +1,159 @@
+---
+title: "Create pkpd mlx data for the vrc01 groups"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F}
+
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(ggbeeswarm)
+source(here("R", "directory-funs.R"))
+theme_set(theme_bw() + theme(legend.position = "top"))
+
+sum_nonmissing = function(x) sum(!is.na(x))
+hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
+
+```
+
+# Overview
+
+The easiest approach is to use the fitted PK parameters as regressors and use a single 
+dependent variable (viral load) approach.
+
+To that end here, we need to make a dataset that has the following for the VRC01 participants:
+ - vl measurements (this is the primary stem data to build off of)
+   - `data/processed-data/adata-vl.csv`
+ - the neutralization inputs: IC50, IC80, and hill slopes
+   - `data/processed-data/adata-vl.csv` but need to calculate hill
+ - VL infection times (ie, VL dosing)
+   - `data/processed-data/unadjusted_model_vl_summary.csv`
+   - need to scale initT_mode relative enrollment infection day: fp_day - initT_mode
+ - direct VRC01 dosing information
+   - `data/processed-data/dosing-data.csv`
+ - the individual fitted pk parameters
+   - `output/pk-modeling/pk-mode-parms.csv`
+ 
+Time should be relative to enrollment.
+
+```{r load-data}
+adata_vl = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
+
+vl_dose = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+  mutate(TIME = fp_day - initT_mode) %>%
+  distinct(pub_id, TIME) %>%
+  mutate(
+    TIME = floor(TIME), # just to keep round numbers
+    AMT = 0.01/1e3,
+    ADM = 2
+    )
+
+pk_dose_data = read_csv(clean_data_here("dosing-data.csv"), col_types = cols()) %>%
+  select(pub_id, TIME = days_enrollment_dose, AMT = dose_mg, RATE) %>%
+  mutate(ADM = 1)
+
+pk_parms = read_csv(here("output/pk-modeling/pk-mode-parms.csv"), col_types = cols()) %>%
+  select(pub_id, Cl, V1, Q, V2)
+
+pkpd_ptids = unique(subset(adata_vl, rx_code2 != "C")$pub_id)
+stopifnot(length(pkpd_ptids) == 96)
+
+```
+
+```{r prep-data}
+
+vl_stem = adata_vl %>% 
+  dplyr::select(pub_id, TIME = days_enrollment, DV = vl, cens) %>% 
+  filter(pub_id %in% pkpd_ptids)
+
+demo_dat = adata_vl %>%
+  dplyr::select(pub_id, rx_code2, protocol, study_region_cat, contains("gmt")) %>% 
+  distinct() %>% 
+  filter(pub_id %in% pkpd_ptids) %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms),
+    hill_mf = hill_slope(gmt50mf, gmt80mf)
+  )
+
+all_dose_data = bind_rows(vl_dose, pk_dose_data) %>%
+  filter(pub_id %in% pkpd_ptids) %>%
+    arrange(pub_id, TIME)
+
+stopifnot(nrow(demo_dat) == 96)
+```
+
+# Curation of the Hill slope
+
+Because there is censoring of the IC50 and IC80. Will look at censoring of IC50 vs. hill. We see that there is no trend among observed ranges, so simple to set Hill for censored IC80 (most stringent) to mean hill.
+
+```{r}
+
+demo_dat %>%
+  ggplot(aes(x = gmt50ls, y = pmax(hill_ls, -3))) +
+  geom_beeswarm(groupOnX=F) +
+  geom_smooth(data = subset(demo_dat, gmt80ls < 100),
+              method = "lm", formula = "y ~ x") +
+  scale_x_log10()
+
+```
+
+```{r}
+
+demo_dat_prep = demo_dat %>%
+  mutate(
+    hill_ls = if_else(gmt80ls < 100, hill_ls, mean(hill_ls[gmt80ls < 100])),
+    hill_ms = if_else(gmt80ms < 100, hill_ms, mean(hill_ms[gmt80ms < 100])),
+    hill_mf = if_else(gmt80mf < 100, hill_mf, mean(hill_mf[gmt80mf < 100])),
+  )
+
+demo_dat_prep %>%
+  ggplot(aes(x = gmt50ls, y = pmax(hill_ls, -3))) +
+  geom_beeswarm(groupOnX=F) +
+  geom_smooth(data = subset(demo_dat, gmt80ls < 100),
+              method = "lm", formula = "y ~ x") +
+  scale_x_log10() +
+  ggtitle("after using mean value")
+
+```
+
+# Finalize data
+
+```{r}
+
+final_data = vl_stem %>%
+  bind_rows(all_dose_data) %>%
+  mutate(
+    DV = if_else(is.na(DV), ".", as.character(DV)),
+    cens = if_else(is.na(cens), ".", as.character(cens)),
+    AMT = if_else(is.na(AMT), ".", as.character(AMT)),
+    ADM = if_else(is.na(ADM), ".", as.character(ADM)),
+    RATE = if_else(is.na(RATE), ".", as.character(RATE)),
+    limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))
+  ) %>%
+  arrange(pub_id, TIME) %>%
+  left_join(demo_dat_prep, by = "pub_id") %>%
+  left_join(pk_parms, by = "pub_id")
+
+
+stopifnot(n_distinct(final_data$pub_id) == 96)
+stopifnot(all(!is.na(final_data)))
+
+```
+
+```{r save}
+
+glimpse(final_data)
+
+write_csv(final_data, mlx_data_here("amp-mlx-pkpd-holteT0.csv"))
+
+```

@@ -1,0 +1,320 @@
+---
+title: "VRC01 PKPD Holte Model"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+Here, we fit the PKPD model combining the Holte VL model with the 2-cmpt PK model.
+
+$$ \beta^{pkpd} = \beta \frac{1}{1+[\rho \frac{C(t)}{IC50}]^{-h}}$$
+
+The rho parameter is the "potency reduction" and the only parameter fit in this model. The IC50 and hill slope (h) come from the data.
+
+It is possible that a profiling approach may be necessary where we only try to fit rho among sensitivity viruses. That is, we profile over a threshold $\rho_T$ where $ \beta^{pkpd} = \beta$ explicitly when $IC50 > \rho_T$.
+
+In the PKPD model itself, each individual is fixed to their individual PK parameters from the PK analysis (ie, as regressors). The VL parameters are fixed at a population level. Will fit a model with and without the IC80-adjusted log-$\pi$ identified in the placebo-only analysis (see 01_placebo_pkpd_model).
+
+```{r load-packages, echo = T, message=F,output=F, warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(lixoftConnectors)
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-model-funs.R"))
+source(here("R", "mlx-envir-res.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "fix-parm-funs.R"))
+source(here("R", "mlx-plot-funs.R"))
+options(knitr.kable.NA = '')
+
+unadj_placebo_model_loc = "VL/holte_vl_refitcorr_placebo"
+adj_placebo_model_loc = "VL-adjusted-placebo/cns-pi"
+
+pkpd_model_tag = function(x) paste0("PKPD/", x)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+theme_set(theme_bw() + theme(legend.position = "top"))
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
+
+initializeLixoftConnectors(software = "monolix")
+options(scipen = 999)
+
+```
+
+```{r load-funs-data}
+
+demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+  distinct() %>%
+  left_join(rx_lab, by = "rx_code2")
+stopifnot(nrow(demo_merge) == 158)
+
+raw_data = read_csv(mlx_data_here("amp-mlx-pkpd-holteT0.csv"), col_types = cols())
+
+unadj_placebo_pop = read_csv(clean_data_here("unadjusted_model_vl_popparms.csv"), 
+                             col_types = cols())
+adj_placebo_pop = stack_model_ests(adj_placebo_model_loc)  
+
+unadj_placebo_init = unadj_placebo_pop %>%
+  select(parameter, value) %>% spread(parameter, value)
+
+adj_placebo_init = adj_placebo_pop %>%
+  select(parameter, value) %>% spread(parameter, value)
+
+```
+
+# Model fitting
+
+```{r vl-dose-setup}
+# check_data("amp-mlx-pkpd-holteT0.csv")
+
+pkpd_types = tribble(
+    ~var_name, ~type,
+    "pub_id", "id",
+    "TIME", "TIME",
+    "DV", "observation",
+    "cens", "cens",
+    "AMT", "amount",
+    "ADM", "admid",
+    "RATE", "rate",
+    "limit", "limit",
+    "rx_code2", "catcov",
+    "protocol", "catcov",
+    "study_region_cat", "catcov",
+    "gmt50ms", "ignore",
+    "gmt80ms", "ignore",
+    "gmt50ls", "regressor",
+    "gmt80ls", "contcov",
+    "gmt50mf", "ignore",
+    "gmt80mf", "ignore",
+    "hill_ls", "regressor",
+    "hill_ms", "ignore",
+    "hill_mf", "ignore",
+    "Cl", "regressor",
+    "V1", "regressor",
+    "Q", "regressor",
+    "V2", "regressor"
+  ) 
+
+stopifnot(ncol(raw_data) == nrow(pkpd_types))
+stopifnot(all(pkpd_types$var_name == names(raw_data)))
+
+```
+
+
+
+```{r adj-model-setup, eval = F}
+
+#these functions are run everytime
+
+setup_pkpd_model = function(inits){
+  
+  amp_recipe(
+    model_text_file = "PKPD_Holte.txt",
+    data_file = "amp-mlx-pkpd-holteT0.csv",
+    variable_types = pkpd_types,
+    initial_estimates = TRUE,
+    obs_dist = "lognormal",
+    error_model = "constant"  
+    )
+  
+  setPopulationParameterInformation(a = list(initialValue = inits$a, 
+                                              method = "FIXED"))
+  set_holte_parms(holte_parms = inits, 
+                  est_omega = "FIXED", 
+                  est_corr_rsif = "FIXED",
+                  dose = T)
+  setIndividualParameterDistribution(lrho = "normal")
+  setPopulationParameterInformation(lrho_pop = list(initialValue = 0))
+  # from mlx documentation: https://www.youtube.com/watch?v=H4WVkTXc45I
+  addContinuousTransformedCovariate(log_ic80_ctr = "log10(gmt80ls) -  0.638")
+  
+  check_init_assignment(inits, exclude_check = "")
+  
+}
+
+```
+
+# Models
+
+## Adjusted PKPD
+
+Using IC80 adjustment on log pi
+
+```{r pkpd-models, eval = F}
+
+setup_pkpd_model(adj_placebo_init)
+
+setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
+                              method = "FIXED")
+)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(pkpd_model_tag("adj-pkpd-model"))
+
+
+# -- no omega for log rho
+
+setup_pkpd_model(adj_placebo_init)
+
+setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
+                              method = "FIXED")
+)
+setIndividualParameterVariability(lrho = F)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(pkpd_model_tag("adj-pkpd-model-no-omega"))
+
+```
+
+## Undjusted PKPD
+
+```{r pkpd-models, eval = F}
+
+setup_pkpd_model(adj_placebo_init)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(pkpd_model_tag("pkpd-model"))
+
+
+# -- no omega for log rho
+
+setup_pkpd_model(adj_placebo_init)
+setIndividualParameterVariability(lrho = F)
+getPopulationParameterInformation()
+
+initial_runs()
+
+save_project(pkpd_model_tag("pkpd-model-no-omega"))
+
+```
+
+
+# Results
+
+```{r setup}
+
+pkpd_data = read_csv(mlx_data_here("amp-pkpd-dat.csv"), col_types = cols())
+
+pkpd_neuts = distinct(pkpd_data, pub_id, across(contains('gmt')))
+
+sample_sizes = map_df(log10_thresh_range, function(i){
+  pkpd_neuts %>%
+    dplyr::filter(log10(gmt50mf) < i) %>%
+    summarize(
+      thresh = i,
+      n = n()
+    )
+})
+
+# thresh_set = tibble(
+#   thresh_set = log10_thresh_range,
+#   project_name = if_else(log10_thresh_range < 0, 
+#                          paste0("thresh_noRE_neg", log10_thresh_range),
+#                          paste0("thresh_noRE_", log10_thresh_range)
+#                          )
+# )
+
+
+thresh_set = tibble(
+  thresh_set = log10_thresh_range,
+  project_name = if_else(log10_thresh_range < 0, 
+                         paste0("thresh_neg", log10_thresh_range),
+                         paste0("thresh_", log10_thresh_range)
+                         )
+)
+
+```
+
+## Pop parms
+
+```{r}
+
+rho_ests = stack_model_ests(thresh_loc(thresh_set$project_name), thresh_set$thresh_set) %>%
+  dplyr::filter(parameter == "lrho_pop") 
+
+stack_model_ests(thresh_loc(thresh_set$project_name), 
+                   thresh_set$thresh_set) %>%
+  dplyr::mutate(parameter = if_else(parameter == "OFV", "LogLik", parameter)) %>%
+  #left_join(mutate(parameter_labels, parm = paste0(parm, "_pop")), by = c("parameter" = "parm")) %>%
+  mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    #parameter_label = if_else(is.na(parameter_label), "", parameter_label),
+    value = if_else(parameter == "dS_pop", value*10^4, value),
+    parameter = if_else(parameter == "dS_pop", "dS_pop x 10^-4", parameter),
+    estimate_rse = if_else(!is.na(rse_sa),
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           stat_paste(value, digits = 2)
+  )) %>%
+  dplyr::select(model, parameter, estimate_rse) %>% 
+  pivot_wider(values_from = estimate_rse, names_from = model)  %>%
+  dplyr::mutate() %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Population parameters (%RSE) for blinded results. RSEs are not estimated for fixed parameters.") %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r}
+
+
+stack_model_ests(thresh_loc(thresh_set$project_name), thresh_set$thresh_set) %>%
+  dplyr::filter(parameter == "BICc") %>%
+  ggplot(aes(x =  model, y = value)) +
+  labs(y = "BICc") +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(
+    "Breakthrough sensitive virus subset (v total): log10(IC50) < x",
+    breaks = c(log10_thresh_range[-1], 3),
+    labels = c(log10_thresh_range[-1], "All viruses")) +
+  geom_text(aes(label = round(value), vjust = if_else(value < 12300, 1.2, -0.1)))
+
+
+```
+
+
+```{r}
+
+rho_ests %>%
+  mutate(thresh = if_else(model < 3, model, model)) %>%
+  left_join(sample_sizes, by = "thresh") %>%
+  ggplot(aes(x =  thresh, y = pmin(value, 7))) +
+  labs(y = "Est. log10(potency reduction factor)") +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = log10(91), linetype = "dashed") +
+  scale_y_continuous(breaks = 2:7, labels = c(2:6, "> 7")) +
+  scale_x_continuous(
+    "Breakthrough sensitive virus subset (v total): log10(IC50) < x",
+    breaks = c(log10_thresh_range[-1], 3),
+    labels = c(log10_thresh_range[-1], "All viruses")) +
+  annotate("text", y = log10(91), x = 2, label = "Pegu et al. est.", vjust = -0.2) +
+  geom_text(aes(label = paste("v =", n), vjust = if_else(n == 35, 1.2, -0.1)))
+
+```

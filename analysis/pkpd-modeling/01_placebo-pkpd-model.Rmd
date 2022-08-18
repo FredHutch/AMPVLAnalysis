@@ -187,14 +187,6 @@ setup_adj_model = function(inits){
     
 }
 
-initial_runs = function(){
-  # get initial estimates w/ simulated annealing on
-  runScenario()
-  setInitialEstimatesToLastEstimates()
-  set_project_settings(initial_estimates = FALSE)
-  runScenario()
-  get_pop_parms()
-}
 
 ```
 
@@ -267,7 +259,6 @@ save_project(adj_model_tag("adj-n"))
 ```
 
 ## Continuous IC80 model
-
 
 ```{r cns-adj-models, eval = F}
 
@@ -513,3 +504,54 @@ ggsave(here("output/pkpd-modeling/adj-placebo-fits.pdf"),
 
 ```
 
+# Run model for VRC01 group
+
+```{r, eval = F}
+
+adj_placebo_inits = stack_model_ests(adj_model_tag("cns-pi")) %>%
+  select(parameter, value) %>% spread(parameter, value)
+
+amp_recipe(
+  model_text_file = "Holte_Model.txt",
+  data_file = "amp-mlx-vl-vrc01.csv",
+  variable_types = vl_types,
+  initial_estimates = FALSE,
+  obs_dist = "lognormal",
+  error_model = "constant"
+)
+  
+  
+setPopulationParameterInformation(a = list(initialValue = adj_placebo_inits$a, 
+                                              method = "FIXED"))
+set_holte_parms(
+  holte_parms = adj_placebo_inits,
+  est_omega = "FIXED",
+  est_corr_rsif = "FIXED",
+  est_inf_time = "FIXED"
+)
+addContinuousTransformedCovariate(log_ic80_ctr = "log10(gmt80ls) -  0.638")
+setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_inits$beta_lp_log_ic80_ctr,
+                  method = "FIXED")
+)
+getPopulationParameterInformation()
+check_init_assignment(adj_placebo_inits, exclude_check = "")
+
+runScenario()
+
+save_project(adj_model_tag("cns-pi-vrc01"))
+
+tmp_scenario <- getPopulationParameterEstimationSettings()
+tmp_scenario[c("nbburningiterations", "nbexploratoryiterations", "nbsmoothingiterations")] <- 0
+setPopulationParameterEstimationSettings(tmp_scenario)
+getPopulationParameterEstimationSettings()
+runScenario()
+
+write_csv(flatten_df(getEstimatedLogLikelihood()), 
+          paste0(
+            mlx_model_here(adj_model_tag("cns-pi-vrc01/")),
+            "loglikelihood.txt"
+          )
+
+```

@@ -72,6 +72,15 @@ amp_recipe <- function(model_text_file, data_file, variable_types,
   }
 }
 
+initial_runs = function(){
+  # get initial estimates w/ simulated annealing on
+  runScenario()
+  setInitialEstimatesToLastEstimates()
+  set_project_settings(initial_estimates = FALSE)
+  runScenario()
+  get_pop_parms()
+}
+
 
 # ----------- setup for PKPD models -------------
 

@@ -360,7 +360,7 @@ amp_recipe(
   model_text_file = "Holte_Model.txt",
   data_file = "amp-mlx-vl-vrc01.csv",
   variable_types = vl_types,
-  initial_estimates = TRUE,
+  initial_estimates = FALSE,
   obs_dist = "lognormal",
   error_model = "constant"  
   )
@@ -372,16 +372,8 @@ setPopulationParameterInformation(
   omega_initT = list(method = "FIXED")
   )
 
-check = left_join(getPopulationParameterInformation(), 
-                                  gather(placebo_refitcorr), by = c("name" = "key"))
-check
-stopifnot(nrow(subset(check, 
-                        abs(initialValue - value) > 1e-4 &
-                          name != "a" &
-                          !is.na(value) )
-                 ) == 0
-  )
-  
+check_init_assignment(placebo_refitcorr, exclude_check = "")
+
 runScenario()
 
 save_project(vl_dir_tag("holte_vl_refitcorr_vrc01"))
@@ -565,7 +557,7 @@ save_project(vl_dir_tag("holte_vl_refitomegacorr_placebo"))
 
 ```
 
-```{r rsif-refit-omegacorr--trt, eval = F}
+```{r rsif-refit-omegacorr-trt, eval = F}
 
 placebo_refitomegacorr = get_pop_ests(vl_dir_tag("holte_vl_refitomegacorr_placebo")) %>%
   select(parameter, value) %>% spread(parameter, value)
