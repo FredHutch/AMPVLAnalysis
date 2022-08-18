@@ -541,17 +541,4 @@ check_init_assignment(adj_placebo_inits, exclude_check = "")
 runScenario()
 
 save_project(adj_model_tag("cns-pi-vrc01"))
-
-tmp_scenario <- getPopulationParameterEstimationSettings()
-tmp_scenario[c("nbburningiterations", "nbexploratoryiterations", "nbsmoothingiterations")] <- 0
-setPopulationParameterEstimationSettings(tmp_scenario)
-getPopulationParameterEstimationSettings()
-runScenario()
-
-write_csv(flatten_df(getEstimatedLogLikelihood()), 
-          paste0(
-            mlx_model_here(adj_model_tag("cns-pi-vrc01/")),
-            "loglikelihood.txt"
-          )
-
 ```
