@@ -1,0 +1,220 @@
+---
+title: "Model set point regression analysis"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(cowplot)
+library(emmeans)
+library(drtmle)
+library(janitor)
+library(cowplot)
+library(knitr)
+source(here("R", "directory-funs.R"))
+source(here("R", "vl-regression-funs.R"))
+
+table_tag = "tables/setpoint-"
+
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank(), panel.grid.major = element_blank()))
+
+opts_chunk$set(dev = c("png", "pdf"))
+
+#stopifnot(dir.exists("/Volumes/trials/"))
+
+vl_lims = c(1, 7)
+vl_title = expression(paste("Viral load (log"[10], " copies/mL)"))
+ep_labels = tibble(
+  levels = c("fp", "peak", "nadir", "mean"),
+  label = c("First positive", "Peak", "Nadir", "Mean")
+)
+
+rx_labeller = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+final_model = 'lm'
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+protocol_colors = c(`HVTN 703/HPTN 085` = "magenta", `HVTN 704/HPTN 081` = "purple")
+
+```
+
+```{r child="0-vl-regression-data-setup.Rmd", echo = T}
+```
+
+# Set point analysis
+
+```{r box-sp-by-protocol}
+data_plots[["model_set_point"]][["prot_pl"]]
+```
+
+```{r box-sp-by-region}
+data_plots[["model_set_point"]][["region_pl"]]
+```
+
+```{r box-sp-trt}
+data_plots[["model_set_point"]][["trt_pl"]]
+```
+
+```{r box-sp-trt-pool}
+data_plots[["model_set_point"]][["trt_pl_pool"]]
+```
+
+```{r sp-run-models}
+trt_grp_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "rx_code", trt_map = rx_map, run_lm = T)
+trt_grp_pool_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "rx_pool_code", trt_map = rx_pool_map, run_lm = T)
+trt_ic80_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
+trt_ic80_pool_setpt = run_vl_drtmle_glm(mdata = set_point_model, A_var = "trt_ic80_pool_code", trt_map = trt_pool_map, run_lm = T)
+
+setpt_models = lst(trt_grp_setpt, trt_grp_pool_setpt, trt_ic80_setpt, trt_ic80_pool_setpt)
+```
+
+## Mean set point VL
+
+```{r sp-mm-table-pool}
+
+trt_ic80_pool_setpt[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
+  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  write_csv(paste0(table_tag, "pool-means.csv")) %>%
+  kable(caption = "Marginal means for set point log$_{10}$ viral load. estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r sp-mm-fig-pool}
+
+trt_ic80_pool_setpt[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(
+    x = trt_var,
+    y = est,
+    ymin = cil,
+    ymax = ciu
+  )) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean set point log10 viral load (95% CI)", x = "VRC01 Groups") +
+  scale_y_continuous(limits = c(2.5, 6.25)) +
+  coord_flip()
+
+```
+
+```{r sp-mm-table}
+
+map2_df(setpt_models, names(setpt_models), ~ (
+  .x[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2), model_set = .y) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Group` = trt_var, `Mean (95pct CI)` = mean_ci) %>%
+  kable(caption = "Marginal means for set point log$_{10}$ viral load. estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r sp-mm-plots}
+
+setpt_mm_pls = map(setpt_models, ~(
+  .[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    labs(y = "Mean set point log10 viral load (95% CI)", x = "VRC01 Groups") +
+    scale_y_continuous(limits = c(2, 6.5)) +
+    coord_flip()
+))
+
+plot_grid(plotlist = setpt_mm_pls)
+
+```
+
+## Set point group comparisons
+
+```{r sp-comp-pool-table}
+
+trt_ic80_pool_setpt[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      p.value = pretty_pvalues(p.value)
+  ) %>%
+  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  write_csv(paste0(table_tag, "pool-comp.csv")) %>%
+  kable(caption = "Differences in set point log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r sp-comp-pool-figure}
+
+trt_ic80_pool_setpt[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference in set point log10 viral load (95% CI)", x = "") +
+    coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r sp-comp-table}
+
+map2_df(setpt_models, names(setpt_models), ~ (
+  .x[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  kable(caption = "Differences in set point log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r sp-comp-plots, fig.height = 11}
+
+setpt_contrast_pls = map(setpt_models, ~(
+  .[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference set point log10 viral load (95% CI)", x = "") +
+    coord_flip()
+))
+
+plot_grid(plotlist = setpt_contrast_pls, ncol = 1)
+
+```

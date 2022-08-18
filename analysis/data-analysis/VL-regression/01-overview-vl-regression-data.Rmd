@@ -1,0 +1,254 @@
+---
+title: "Overview - Data for regression analysis"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(cowplot)
+library(emmeans)
+library(drtmle)
+library(janitor)
+library(cowplot)
+library(knitr)
+source(here("R", "directory-funs.R"))
+source(here("R", "vl-regression-funs.R"))
+
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank(), panel.grid.major = element_blank()))
+
+opts_chunk$set(dev = c("png", "pdf"))
+
+#stopifnot(dir.exists("/Volumes/trials/"))
+
+vl_lims = c(1, 7)
+vl_title = expression(paste("Viral load (log"[10], " copies/mL)"))
+ep_labels = tibble(
+  levels = c("fp", "peak", "nadir", "mean"),
+  label = c("First positive", "Peak", "Nadir", "Mean")
+)
+
+rx_labeller = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+final_model = 'lm'
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+protocol_colors = c(`HVTN 703/HPTN 085` = "magenta", `HVTN 704/HPTN 081` = "purple")
+
+```
+
+```{r child="0-vl-regression-data-setup.Rmd", echo = T}
+```
+
+# Overview
+
+This is just an overview of the available data. 
+
+See methods-discussion.md
+
+```{r sample-sizes}
+
+acquisitions = first_positive %>% 
+  group_by(rx_lab, ic80gte1) %>%
+  summarize(Acquisitions = n(), .groups = "drop")
+
+set_point %>%
+  dplyr::filter(set_pt_lloq != measurements) %>%
+  mutate(measure_trunc = if_else(measurements < 4, as.character(measurements), "4+")) %>%
+  group_by(rx_lab, ic80gte1, measure_trunc) %>%
+  summarize(N = n(), .groups = "drop") %>%
+  spread(measure_trunc, N, fill = 0) %>%
+  janitor::adorn_totals(where = "col", name = "N") %>%
+  left_join(acquisitions, by = c("rx_lab", "ic80gte1")) %>%
+  janitor::adorn_totals(where = "row", name = "Overall") %>%
+  rename(`Grp` = rx_lab, `Sensitivity` = ic80gte1) %>%
+  kable() %>%
+  kable_styling(full_width = F) %>%
+  add_header_above(c(' ' = 2, 'Total meas. in setpoint' = 4, ' ' = 2))
+
+avg_vl %>%
+  mutate(measure_trunc = if_else(measurements < 4, as.character(measurements), "4+")) %>%
+  group_by(rx_lab, ic80gte1, measure_trunc) %>%
+  summarize(N = n(), .groups = "drop") %>%
+  spread(measure_trunc, N, fill = 0) %>%
+  janitor::adorn_totals(where = "col", name = "N") %>%
+  left_join(acquisitions, by = c("rx_lab", "ic80gte1")) %>%
+  janitor::adorn_totals(where = "row", name = "Overall") %>%
+  rename(`Grp` = rx_lab, `Sensitivity` = ic80gte1) %>%
+  kable() %>%
+  kable_styling(full_width = F) %>%
+  add_header_above(c(' ' = 2, 'Total meas. in average' = 4, ' ' = 2))
+
+```
+
+```{r vl-protocol-paper}
+
+set_point %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  bind_rows(avg_vl) %>%
+  ggplot(aes(x = protocol_full, y = log10vl, colour = protocol_full)) +
+  geom_boxplot() +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ ., switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text()) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = protocol_colors, guide = "none") +
+  ggtitle("Observed viral endpoints")
+
+```
+
+```{r vl-allgrp-paper, fig.height = 9}
+
+set_point %>%
+  mutate(metric_title = "Obs. set point log10 VL") %>%
+  bind_rows(mutate(avg_vl, metric_title = "Mean log10 VL")) %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = model_setpt, 
+                   metric_title = "Model set point log10 VL")) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = geo_auc_3mo, 
+                   metric_title = "Model 3-mo mean log10 VL")) %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+  geom_boxplot() +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ rx_lab, switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = ic80gte1_colors, guide = "none")
+
+```
+
+```{r vl-paper-pooled, fig.height = 9}
+
+set_point %>%
+  mutate(metric_title = "Obs. set point log10 VL") %>%
+  bind_rows(mutate(avg_vl, metric_title = "Mean log10 VL")) %>%
+  #dplyr::filter(measurements > 1) %>%
+  bind_rows(first_positive) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = geo_auc_3mo, 
+                   metric_title = "Model 3-mo mean log10 VL")) %>%
+  bind_rows(mutate(vl_mod_summary, log10vl = model_setpt, 
+                   metric_title = "Model set point log10 VL")) %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+  geom_boxplot(width = 0.45) +
+  geom_jitter(height = 0, width = 0.1) +
+  facet_grid(metric_title ~ rx_pool, switch = "y") +
+  labs(y = "", x = "") +
+  theme(axis.text.x = element_text()) +
+  theme(strip.placement = "outside", strip.background = element_blank()) +
+  scale_color_manual(values = ic80gte1_colors, guide = "none")
+
+```
+
+## Set point, observed vs. modeled
+
+```{r set-point-obs}
+
+# set_point %>%
+#   left_join(dan_summary, by = c("pub_id" = "pid")) %>%
+#   ggplot(aes(x = log10vl, y = set_pt)) +
+#   geom_point() +
+#   geom_abline()
+
+set_point %>%
+  rename(obs_set_pt = log10vl) %>%
+  left_join(vl_mod_summary, by = "pub_id") %>%
+  ggplot(aes(x = obs_set_pt, y = model_setpt)) +
+  geom_point() +
+  coord_equal(xlim = c(0.5, 7.1), ylim = c(0.5, 7.1)) +
+  geom_abline()
+
+```
+
+
+# AUC viral loads, observed vs. modeled
+
+Using the auc of the log10 VL over the first month imputed/interpolated from the model. The auc of log10 from the model tends to be lower. This is consistent with smoother data and incorporating time. For example, if two participants had the same VL measurements in their data but the trajectory was different, the AUCs could be different.
+
+The log10 of raw AUC is too sensitive to peak which is entirely imputed from the model.
+
+```{r avg-obs}
+
+avg_vl %>%
+  rename(obs_avg = log10vl) %>%
+  left_join(vl_mod_summary, by = "pub_id") %>%
+  filter(!is.na(geo_auc_3mo)) %>%
+  ggplot(aes(x = obs_avg, y = geo_auc_3mo, colour = factor(pmin(final_day, art_day) > 90))) +
+  geom_point() +
+  coord_equal(xlim = c(0.1, 7.1), ylim = c(0.1, 7.1)) +
+  geom_abline()
+
+avg_vl %>%
+  rename(obs_avg = log10vl) %>%
+  left_join(vl_mod_summary, by = "pub_id") %>%
+  filter(!is.na(geo_auc_3mo)) %>%
+  ggplot(aes(x = obs_avg, y = log10_auc_3mo)) +
+  geom_point() +
+  coord_equal(xlim = c(0.5, 7.1), ylim = c(0.5, 7.1)) +
+  geom_abline()
+
+```
+
+
+```{r}
+tmp = distinct(avg_vl_model, pub_id, post_fp_infusion)
+
+avg_vl %>%
+  left_join(tmp, by = "pub_id") %>%
+  filter(!is.na(post_fp_infusion)) %>%
+  ggplot(aes(x = rx_pool, y = log10vl, colour = factor(post_fp_infusion))) +
+  geom_boxplot(position = position_dodge(width = 0.75)) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  labs(y = "obs average")
+
+```
+
+```{r}
+
+avg_vl %>%
+  left_join(tmp, by = "pub_id") %>%
+  filter(!is.na(post_fp_infusion)) %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = factor(post_fp_infusion))) +
+  geom_boxplot(position = position_dodge(width = 0.75)) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  labs(y = "obs average")
+
+```
+
+
+```{r}
+
+avg_vl_model %>%
+  ggplot(aes(x = rx_pool, y = log10vl, colour = factor(post_fp_infusion))) +
+  geom_boxplot(position = position_dodge(width = 0.75)) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  labs(y = "model predicted AUC")
+
+```
+
+
+```{r}
+
+avg_vl_model %>%
+  ggplot(aes(x = ic80gte1, y = log10vl, colour = factor(post_fp_infusion))) +
+  geom_boxplot(position = position_dodge(width = 0.75)) +
+  geom_point(position = position_dodge(width = 0.75)) +
+  labs(y = "model predicted AUC")
+
+```

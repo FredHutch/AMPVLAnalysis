@@ -1,0 +1,378 @@
+---
+title: "Model AUC regression analysis"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+library(cowplot)
+library(emmeans)
+library(drtmle)
+library(janitor)
+library(cowplot)
+library(knitr)
+source(here("R", "directory-funs.R"))
+source(here("R", "vl-regression-funs.R"))
+
+table_tag = "tables/avg-"
+table_tag_adj = "tables/avg-adj-"
+
+theme_set(theme_bw() + theme(legend.position = "top", panel.grid.minor = element_blank(), panel.grid.major = element_blank()))
+
+opts_chunk$set(dev = c("png", "pdf"))
+
+#stopifnot(dir.exists("/Volumes/trials/"))
+
+vl_lims = c(1, 7)
+vl_title = expression(paste("Viral load (log"[10], " copies/mL)"))
+ep_labels = tibble(
+  levels = c("fp", "peak", "nadir", "mean"),
+  label = c("First positive", "Peak", "Nadir", "Mean")
+)
+
+rx_labeller = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+final_model = 'lm'
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+protocol_colors = c(`HVTN 703/HPTN 085` = "magenta", `HVTN 704/HPTN 081` = "purple")
+
+```
+
+```{r child="0-vl-regression-data-setup.Rmd", echo = T}
+```
+
+
+# AUC viral loads {.tabset}
+
+Assessment of data talked about in the overview of the data.
+
+Participants received infusions after their first positive. One set of models ignores this, the other explicitly controls for it.
+
+```{r box-avg-by-protocol}
+data_plots[["model_geomean_vl"]][["prot_pl"]]
+```
+
+```{r box-avg-by-region}
+data_plots[["model_geomean_vl"]][["region_pl"]]
+```
+
+```{r box-avg-trt}
+data_plots[["model_geomean_vl"]][["trt_pl"]]
+```
+
+```{r box-avg-trt-pool}
+data_plots[["model_geomean_vl"]][["trt_pl_pool"]]
+```
+
+## Unadjusted models
+
+Using same approach as other endpoints.
+
+```{r avg-run-models}
+
+trt_grp_avg = run_vl_drtmle_glm(mdata = avg_vl_model, A_var = "rx_code", trt_map = rx_map, run_lm = T)
+trt_grp_pool_avg = run_vl_drtmle_glm(mdata = avg_vl_model, A_var = "rx_pool_code", trt_map = rx_pool_map, run_lm = T)
+trt_ic80_avg = run_vl_drtmle_glm(mdata = avg_vl_model, A_var = "trt_ic80_code", trt_map = trt_grp_map, run_lm = T)
+trt_ic80_pool_avg = run_vl_drtmle_glm(mdata = avg_vl_model, A_var = "trt_ic80_pool_code", trt_map = trt_pool_map, run_lm = T)
+
+avg_models = lst(trt_grp_avg, trt_grp_pool_avg, trt_ic80_avg, trt_ic80_pool_avg)
+```
+
+### Marginal Mean of AUC VL
+
+```{r avg-mm-table-pool}
+
+trt_ic80_pool_avg[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
+  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  write_csv(paste0(table_tag, "pool-means.csv")) %>%
+  kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load. estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r avg-mm-fig-pool}
+
+trt_ic80_pool_avg[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(
+    x = trt_var,
+    y = est,
+    ymin = cil,
+    ymax = ciu
+  )) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean 90-day AUC log10 viral load (95% CI)", x = "VRC01 Groups") +
+  scale_y_continuous(limits = c(2.5, 6.25)) +
+  coord_flip()
+
+```
+
+```{r avg-mm-table}
+
+map2_df(avg_models, names(avg_models), ~ (
+  .x[['mm']] %>%
+    filter(model == final_model) %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2), model_set = .y) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Group` = trt_var, `Mean (95pct CI)` = mean_ci) %>%
+  kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load. estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r avg-mm-plots}
+
+avg_mm_pls = map(avg_models, ~(
+  .[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    labs(y = "Mean 90-day AUC log10 viral load (95% CI)", x = "VRC01 Groups") +
+    scale_y_continuous(limits = c(2, 6.5)) +
+    coord_flip()
+))
+
+plot_grid(plotlist = avg_mm_pls)
+
+```
+
+### AUC group comparisons
+
+```{r avg-comp-pool-table}
+
+trt_ic80_pool_avg[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      p.value = pretty_pvalues(p.value)
+  ) %>%
+  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  write_csv(paste0(table_tag, "pool-comp.csv")) %>%
+  kable(caption = "Differences in 90-day AUC log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r avg-comp-pool-figure}
+
+trt_ic80_pool_avg[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference in 90-day AUC log10 viral load (95% CI)", x = "") +
+    coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r avg-comp-table}
+
+map2_df(avg_models, names(avg_models), ~ (
+  .x[['contrast']] %>%
+    filter(model == final_model) %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  kable(caption = "Differences in 90-day AUC log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r avg-comp-plots, fig.height = 11}
+
+avg_contrast_pls = map(avg_models, ~(
+  .[['contrast']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference set point log10 viral load (95% CI)", x = "") +
+    coord_flip()
+))
+
+plot_grid(plotlist = avg_contrast_pls, ncol = 1)
+
+```
+
+## Adjusted model
+
+Here, we explicitly control for infusions after first positive.
+
+```{r adj-avg-run-models}
+# turns boolean to 0s and 1s
+avg_vl_model$post_fp_infusion_mod = 
+  as.numeric(avg_vl_model$post_fp_infusion & avg_vl_model$rx_code2 != "C")
+
+trt_grp_avg_adj = run_adj_vl_lm(avg_vl_model, trt_map = rx_map)
+trt_grp_pool_avg_adj = run_adj_vl_lm(mdata = avg_vl_model, trt_map = rx_pool_map)
+trt_ic80_avg_adj = run_adj_vl_lm(mdata = avg_vl_model, trt_map = trt_grp_map)
+trt_ic80_pool_avg_adj = run_adj_vl_lm(mdata = avg_vl_model, trt_map = trt_pool_map)
+
+avg_adj_models = lst(trt_grp_avg_adj, trt_grp_pool_avg_adj, trt_ic80_avg_adj, trt_ic80_pool_avg_adj)
+```
+
+### Marginal Mean of AUC VL adjusted for post-fp infusion
+
+```{r avg-adj-mm-table-pool}
+
+trt_ic80_pool_avg_adj[['mm']] %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
+  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  #write_csv(paste0(table_tag_adj, "pool-means.csv")) %>%
+  kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r avg-adj-mm-fig-pool}
+
+trt_ic80_pool_avg_adj[['mm']] %>%
+  ggplot(aes(
+    x = trt_var,
+    y = est,
+    ymin = cil,
+    ymax = ciu
+  )) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  labs(y = "Mean 90-day AUC log10 viral load (95% CI) (infusion-adj)", x = "VRC01 Groups") +
+  scale_y_continuous(limits = c(2.5, 6.25)) +
+  coord_flip()
+
+```
+
+```{r avg-adj-mm-table}
+
+map2_df(avg_adj_models, names(avg_adj_models), ~ (
+  .x[['mm']] %>%
+    mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2), model_set = .y) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Group` = trt_var, `Mean (95pct CI)` = mean_ci) %>%
+  kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", format = "html") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r avg-adj-mm-plots}
+
+avg_adj_mm_pls = map(avg_adj_models, ~(
+  .[['mm']] %>%
+  filter(model == final_model) %>%
+  ggplot(aes(x = trt_var, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    labs(y = "Mean 90-day AUC log10 viral load (95% CI) (infusion-adj)", x = "VRC01 Groups") +
+    scale_y_continuous(limits = c(2, 6.5)) +
+    coord_flip()
+))
+
+plot_grid(plotlist = avg_adj_mm_pls)
+
+```
+
+### AUC group comparisons adjusted for post-fp infusion.
+
+```{r avg-adj-comp-pool-table}
+
+trt_ic80_pool_avg_adj[['contrast']] %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      p.value = pretty_pvalues(p.value)
+  ) %>%
+  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  write_csv(paste0(table_tag_adj, "pool-comp.csv")) %>%
+  kable(caption = "Differences in 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r avg-adj-comp-pool-figure}
+
+trt_ic80_pool_avg_adj[['contrast']] %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference in 90-day AUC log10 viral load (95% CI) (infusion-adj)", x = "") +
+    coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r avg-adj-comp-table}
+
+map2_df(avg_adj_models, names(avg_adj_models), ~ (
+  .x[['contrast']] %>%
+    mutate(
+      mean_ci = stat_paste(est, cil, ciu, digits = 2), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  kable(caption = "Differences in 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+```{r avg-adj-comp-plots, fig.height = 11}
+
+avg_adj_contrast_pls = map(avg_adj_models, ~(
+  .[['contrast']] %>%
+  ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
+    geom_pointrange(position = position_dodge(width = 0.5)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+    labs(y = "Difference set point log10 viral load (95% CI) (infusion-adj)", x = "") +
+    coord_flip()
+))
+
+plot_grid(plotlist = avg_adj_contrast_pls, ncol = 1)
+
+```

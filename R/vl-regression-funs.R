@@ -131,3 +131,29 @@ run_vl_drtmle_glm = function(mdata, A_var,
   return(out_list)
   
 }
+
+#' Runs lm for average viral load, allows incorporation of infusions after first positive. log10vl as outcome, region/protocol as covariate
+#'
+#' @param mdata input model data
+#' @param trt_map a data.frame or tibble (for merging) that has the trt covariate in the first position
+#' @return a list: an mm tibble, a contrast tibble, the lm obj if run
+run_adj_vl_lm = function(mdata, trt_map){
+  
+  lm_trt_var = names(trt_map)[1]
+  lm_formula = as.formula(paste("log10vl ~ isSA703 + isNSA703 + isSwiss704 + post_fp_infusion_mod +", lm_trt_var))
+  lm_output = run_vl_lm(mdata = mdata,
+                        formula = lm_formula, 
+                        lm_trt_var = lm_trt_var)
+  
+  lm_output[['mm']]$trt_var = lm_output[['mm']][[names(trt_map)[1]]]
+      
+  out_list = list(lm_output[['lm_mod']], lm_output[['mm']], lm_output[['contrast']])
+  
+  
+  names(out_list) = c("fit", "mm", "contrast")
+
+  return(out_list)
+  
+}
+
+

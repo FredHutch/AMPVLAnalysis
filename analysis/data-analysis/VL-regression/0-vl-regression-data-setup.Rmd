@@ -1,0 +1,194 @@
+---
+title: "Setup VL regression data"
+author: "Bryan Mayer"
+output: md_document
+---
+
+<!--- THIS WILL NOT RUN ALONE--->
+<!--- THIS IS MEANT TO BE CALLED AS A CHILD DOCUMENT BY THE SPECIFIC REGRESSION RESPORTS---->
+
+```{r map-setup}
+
+rx_map = tribble(
+  ~rx_lab, ~rx_code,
+  "Placebo", 1,
+  "VRC01 (10mg/kg)", 2,
+  "VRC01 (30mg/kg)", 3
+)
+
+rx_pool_map = tribble(
+  ~rx_pool, ~rx_pool_code,
+  "Placebo", 1,
+  "VRC01 (Pooled)", 2
+)
+
+trt_grp_map = tribble(
+  ~trt_ic80, ~trt_ic80_code,
+  "Placebo, IC80 < 1 mcg/mL", 1,
+  "Placebo, IC80 >= 1 mcg/mL", 2,
+  "VRC01 (10mg/kg), IC80 < 1 mcg/mL", 3,
+  "VRC01 (10mg/kg), IC80 >= 1 mcg/mL", 4,
+  "VRC01 (30mg/kg), IC80 < 1 mcg/mL", 5,
+  "VRC01 (30mg/kg), IC80 >= 1 mcg/mL", 6
+)
+
+trt_pool_map = tribble(
+  ~trt_ic80_pool, ~trt_ic80_pool_code,
+  "Placebo, IC80 < 1 mcg/mL", 1,
+  "Placebo, IC80 >= 1 mcg/mL", 2,
+  "VRC01 (Pooled), IC80 < 1 mcg/mL", 3,
+  "VRC01 (Pooled), IC80 >= 1 mcg/mL", 4
+)
+
+```
+
+```{r data-setup}
+
+vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>%
+  mutate(
+    protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 085", "HVTN 704/HPTN 081"),
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
+    rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
+    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)"),
+    trt_ic80 = paste(rx_lab, ic80gte1, sep = ", "),
+    trt_ic80_pool = paste(rx_pool, ic80gte1, sep = ", ")
+  ) %>%
+  dplyr::select(-rx_code) %>%
+  left_join(trt_grp_map, by = "trt_ic80") %>%
+  left_join(trt_pool_map, by = "trt_ic80_pool") %>%
+  left_join(rx_map, by = "rx_lab") %>%
+  left_join(rx_pool_map, by = "rx_pool") 
+
+demo_dat = distinct(vl_data, pub_id, trt_ic80, ic80gte1, protocol_full, rx_lab, rx_pool)
+
+vl_mod_summary = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
+    rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
+    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)")
+  )
+
+# this would signify a data change
+stopifnot(nrow(vl_data) == 880)
+stopifnot(all(!is.na(select(vl_data, -artstartdt))))
+
+first_positive = vl_data %>% 
+  dplyr::filter(days_fp == 0) %>%
+  mutate(
+    metric = "first_positive",
+    metric_title = "First positive log10 VL",
+    isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3
+  ) %>%
+  arrange(trt_ic80_code)
+
+avg_vl = vl_data %>% 
+  dplyr::filter(days_fp >= 0) %>%
+  group_by(across(c(pub_id, ic80gte1, protocol_full, contains("trt_"), contains("rx_"), study_region_code))) %>%
+  summarize(
+    measurements = n(),
+    log10vl = mean(log10vl),
+    log10vl_alt = mean(log10vl[final_preart_day <= 90]),
+    metric = "geomean_vl",
+    metric_title = "Mean log10 VL",
+    .groups = "drop"
+  ) %>%
+  arrange(trt_ic80_code) %>%
+  mutate(isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3)
+
+avg_vl_model = first_positive %>%
+  select(-log10vl) %>%
+  left_join(select(vl_mod_summary, pub_id, log10vl = geo_auc_3mo), by = "pub_id") %>%
+  filter(!is.na(log10vl)) %>%
+  mutate(
+    metric = "model_geomean_vl",
+    metric_title = "Model 3-mo mean log10 VL"
+  )
+stopifnot(nrow(avg_vl_model) == 158)
+  
+set_point = vl_data %>% 
+  dplyr::filter(days_fp >= 0) %>%
+  group_by(pub_id) %>%
+  mutate(
+    peak_day = days_fp[which.max(log10vl)]
+  ) %>%
+  ungroup() %>%
+  dplyr::filter(days_fp > peak_day) %>%
+  group_by(across(c(pub_id, ic80gte1, protocol_full, peak_day, contains("trt_"), contains("rx_"), study_region_code))) %>%
+  summarize(
+    measurements = n(),
+    set_pt_lloq = sum(cens > 0),
+    log10vl = mean(log10vl),
+    metric = "set_point",
+    metric_title = "Set point log10 VL",
+    `.groups` = "drop"
+  ) %>%
+  arrange(trt_ic80_code) %>%
+  mutate(isSA703 = study_region_code == 1,
+    isNSA703 = study_region_code == 2,
+    isSwiss704 = study_region_code == 3)
+stopifnot(nrow(set_point) == 134)
+
+set_point_model = first_positive %>%
+  select(-log10vl) %>%
+  left_join(select(vl_mod_summary, pub_id, log10vl = model_setpt), by = "pub_id")  %>%
+  filter(!is.na(log10vl)) %>%
+  mutate(
+    metric = "model_set_point",
+    metric_title = "Model set point log10 VL"
+  )
+stopifnot(nrow(set_point_model) == 158)
+
+full_measurement_data = bind_rows(first_positive, avg_vl_model, set_point_model, avg_vl, set_point)
+
+```
+
+```{r make-data-plots}
+
+data_plots = unique(full_measurement_data$metric) %>%
+  set_names() %>%
+  map(function(endpoint){
+    
+    dat = subset(full_measurement_data, metric == endpoint)
+    ylab = unique(dat$metric_title)
+  
+    prot_pl = ggplot(dat, aes(x = protocol_full, y = log10vl, colour = protocol_full)) +
+      geom_boxplot() +
+      geom_point() +
+      scale_color_manual(values = protocol_colors) +
+      facet_grid(ic80gte1 ~ rx_lab) +
+      labs(y = ylab, x = "Protocol")
+    
+    region_pl = ggplot(dat, aes(x = study_region_cat, y = log10vl, colour = protocol_full)) +
+      geom_boxplot() +
+      geom_point() +
+      facet_grid(ic80gte1 ~ rx_lab) +
+      scale_color_manual(values = protocol_colors) +
+      labs(y = ylab) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    trt_pl = ggplot(dat, aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+      geom_boxplot() +
+      geom_point() +
+      facet_grid(. ~ rx_lab) +
+      scale_color_manual(values = ic80gte1_colors) +
+      labs(y = ylab) +
+      theme(axis.text.x = element_text())
+    
+    trt_pl_pool = ggplot(dat, aes(x = ic80gte1, y = log10vl, colour = ic80gte1)) +
+      geom_boxplot() +
+      geom_point() +
+      facet_grid(. ~ rx_pool) +
+      scale_color_manual(values = ic80gte1_colors) +
+      labs(y = ylab) +
+      theme(axis.text.x = element_text())
+    
+    set_names(list(prot_pl, region_pl, trt_pl, trt_pl_pool),
+              c("prot_pl", "region_pl", "trt_pl", "trt_pl_pool"))
+    
+    })
+
+```
