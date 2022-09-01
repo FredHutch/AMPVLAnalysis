@@ -246,6 +246,10 @@ all_indiv_obs = get_indiv_preds(pkpd_models$model_location[3]) %>%
   mutate(weeks = time/7) %>%
   left_join(demo_merge, by = "pub_id")
 
+all_indiv_parms = stack_indiv_parms(pkpd_models$model_location,
+  pkpd_models$model_label) %>%
+  rename(pub_id = id) %>%
+  left_join(demo_merge, by = "pub_id")
 
 ```
 
@@ -302,5 +306,28 @@ indiv_plots = map(split(sort(unique(pkpd_fits$pub_id)),
 ggsave(here("output/pkpd-modeling/pkpd-fits.pdf"), 
        width = 8, height = 10,
        gridExtra::marrangeGrob(indiv_plots, nrow=1, ncol=1))
+
+```
+
+## Indiv parms
+
+```{r}
+
+all_indiv_parms %>%
+  select(pub_id, model, contains("_mode"), -initT_mode, -V0_mode, -aS_mode) %>%
+  gather("parameter", "value", -pub_id, -model) %>%
+  ggplot(aes(x = model, y = value)) +
+  geom_boxplot() +
+  facet_wrap(~parameter, scales ="free_y") +
+  ggtitle("all viruses")
+
+all_indiv_parms %>%
+  filter(gmt80ls < 1) %>%
+  select(pub_id, model, contains("_mode"), -initT_mode, -V0_mode, -aS_mode) %>%
+  gather("parameter", "value", -pub_id, -model) %>%
+  ggplot(aes(x = model, y = value)) +
+  geom_boxplot() +
+  facet_wrap(~parameter, scales ="free_y") +
+  ggtitle("sensitive viruses (ic80 < 1)")
 
 ```

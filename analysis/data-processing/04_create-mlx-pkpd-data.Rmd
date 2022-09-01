@@ -99,6 +99,13 @@ Because there is censoring of the IC50 and IC80. Will look at censoring of IC50 
 ```{r}
 
 demo_dat %>%
+  summarize(
+    hill_ls = mean(hill_ls[gmt80ls < 100]),
+    hill_ms = mean(hill_ms[gmt80ms < 100]),
+    hill_mf = mean(hill_mf[gmt80mf < 100])
+  )
+
+demo_dat %>%
   ggplot(aes(x = gmt50ls, y = pmax(hill_ls, -3))) +
   geom_beeswarm(groupOnX=F) +
   geom_smooth(data = subset(demo_dat, gmt80ls < 100),

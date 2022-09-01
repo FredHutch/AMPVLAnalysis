@@ -2,7 +2,10 @@
 title: "Simulate PK Data"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
-output: html_document
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
@@ -23,8 +26,8 @@ Both datasets will have key times merged on for easier filter to concentrations 
 The dosing data comes from the full infusion information rather than the PK dataset, but results from both approaches are compared.
 For the full infusion data, any infusion after day 0, is assumed to occur at time x.1 to offset with viral measurements that would be pre-infusion on the same day (days_enrollment_dose, see final step in data-processing).
 
-```{r load-packages, echo = FALSE, message=F,output=F}
-knitr::opts_chunk$set(echo = F)
+```{r load-packages, echo = T, message=F,output=F}
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(zoo)
 library(tidyverse)

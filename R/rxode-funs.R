@@ -62,6 +62,7 @@ run_pkpd_models = function(mtime, model_obj, theta_pk, theta_vl, theta_pd, initi
   
   as.data.frame(model_obj$model$solve(theta, event = ev, inits = init)) %>%
     mutate(
+      IC50 = theta_pd$IC50,
       Vout = V * 1000,
       log10V = log10(Vout)
     )

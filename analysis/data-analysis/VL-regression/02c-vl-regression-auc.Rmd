@@ -100,7 +100,7 @@ avg_models = lst(trt_grp_avg, trt_grp_pool_avg, trt_ic80_avg, trt_ic80_pool_avg)
 trt_ic80_pool_avg[['mm']] %>%
     filter(model == final_model) %>%
     mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
-  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  select(`Group` = trt_var, `Mean AUC (95pct CI)` = mean_ci) %>%
   write_csv(paste0(table_tag, "pool-means.csv")) %>%
   kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load. estimates adjusted for protocol/region.", format = "html") %>%
   kable_styling(full_width = F)
@@ -168,7 +168,7 @@ trt_ic80_pool_avg[['contrast']] %>%
       mean_ci = stat_paste(est, cil, ciu, digits = 2), 
       p.value = pretty_pvalues(p.value)
   ) %>%
-  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  select(`Comparison` = contrast, `Mean AUC Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
   write_csv(paste0(table_tag, "pool-comp.csv")) %>%
   kable(caption = "Differences in 90-day AUC log$_{10}$ viral load. Estimates adjusted for protocol/region.", 
         format = "html",
@@ -222,11 +222,37 @@ avg_contrast_pls = map(avg_models, ~(
   ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
     geom_pointrange(position = position_dodge(width = 0.5)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-    labs(y = "Difference set point log10 viral load (95% CI)", x = "") +
+    labs(y = "Difference  90-day AUC log10 viral load (95% CI)", x = "") +
     coord_flip()
 ))
 
 plot_grid(plotlist = avg_contrast_pls, ncol = 1)
+
+```
+
+
+### Protocol/Region Comparisons
+
+```{r avg-protocol-comp}
+
+map2_df(avg_models, names(avg_models), ~ (
+  .x[['protocol_contrast']] %>%
+    mutate(
+      mean_diff = round_away_0(est, digits = 3), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff.` = mean_diff, `p-value` = p.value) %>%
+    write_csv(paste0(table_tag, "protocol-region-comparison.csv")) %>%
+kable(caption = "Differences in 90-day AUC RNA+ log$_{10}$ viral load between protocol/region groups.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
 
 ```
 
@@ -253,7 +279,7 @@ avg_adj_models = lst(trt_grp_avg_adj, trt_grp_pool_avg_adj, trt_ic80_avg_adj, tr
 
 trt_ic80_pool_avg_adj[['mm']] %>%
     mutate(mean_ci = stat_paste(est, cil, ciu, digits = 2)) %>%
-  select(`Group` = trt_var, `Mean Set Point (95pct CI)` = mean_ci) %>%
+  select(`Group` = trt_var, `Mean AUC (95pct CI)` = mean_ci) %>%
   #write_csv(paste0(table_tag_adj, "pool-means.csv")) %>%
   kable(caption = "Marginal means for 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", format = "html") %>%
   kable_styling(full_width = F)
@@ -318,7 +344,7 @@ trt_ic80_pool_avg_adj[['contrast']] %>%
       mean_ci = stat_paste(est, cil, ciu, digits = 2), 
       p.value = pretty_pvalues(p.value)
   ) %>%
-  select(`Comparison` = contrast, `Mean First Positive Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
+  select(`Comparison` = contrast, `Mean AUC Diff. (95pct CI)` = mean_ci, `p-value` = p.value) %>%
   write_csv(paste0(table_tag_adj, "pool-comp.csv")) %>%
   kable(caption = "Differences in 90-day AUC log$_{10}$ viral load adjusted for post-fp infusion. Estimates adjusted for protocol/region.", 
         format = "html",
@@ -369,10 +395,37 @@ avg_adj_contrast_pls = map(avg_adj_models, ~(
   ggplot(aes(x = contrast, y = est, ymin = cil, ymax = ciu)) +
     geom_pointrange(position = position_dodge(width = 0.5)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
-    labs(y = "Difference set point log10 viral load (95% CI) (infusion-adj)", x = "") +
+    labs(y = "Difference  90-day AUC log10 viral load (95% CI) (infusion-adj)", x = "") +
     coord_flip()
 ))
 
 plot_grid(plotlist = avg_adj_contrast_pls, ncol = 1)
 
 ```
+
+
+### Protocol/Region Comparisons
+
+```{r avg-adj-protocol-comp}
+
+map2_df(avg_adj_models, names(avg_adj_models), ~ (
+  .x[['protocol_contrast']] %>%
+    mutate(
+      mean_diff = round_away_0(est, digits = 3), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff.` = mean_diff, `p-value` = p.value) %>%
+    write_csv(paste0(table_tag_adj, "protocol-region-comparison.csv")) %>%
+kable(caption = "Differences in 90-day AUC RNA+ log$_{10}$ viral load between protocol/region groups adjusted for post-fp infusion.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+

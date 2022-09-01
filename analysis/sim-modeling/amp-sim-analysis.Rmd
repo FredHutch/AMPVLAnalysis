@@ -1,0 +1,579 @@
+---
+title: "Simulating PKPD using AMP settings"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+This is to generate the final figures from the PKPD model decsribing the population results in
+the AMP study.
+
+- Placebo effect plot (the burst size adjustment model)
+- PKPD plots showing direct and indirect effects
+
+
+```{r load-packages, echo = T, message=F,output=F,warning =F}
+knitr::opts_chunk$set(echo = T)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(RxODE)
+library(viridis)
+library(cowplot)
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "rxode-funs.R"))
+source(here("models", "rxode-models", "rxode-models.R"))
+source(here("models", "rxode-models", "rxode-pkpd-models.R"))
+
+theme_set(theme_bw() + theme(legend.position = "top"))
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
+
+adj_placebo_model_loc = "VL-adjusted-placebo/cns-pi"
+
+amp_theta_pd = tibble(IC80 = NA, rho = 550, h = 1.25)
+
+titer_neut = function(id50, h = 1) 1 - beta_titer_neut(id50, h)
+beta_titer_neut = function(id50, h = 1) 1/(1+id50^h)
+
+```
+
+```{r pe-data}
+
+pt80_efficacy = tibble(
+  PT80 = c(32, 82, 194),
+  PE = c(50, 75, 90),
+  PE_pct = paste0("PE ", PE, "%"),
+  pe_neut = PE/100
+)
+
+empirical_amp_fit = drc::drm(pe_neut ~ PT80, data = pt80_efficacy, 
+                        fct = drc::LL.5(names = c("slope", "lower", "upper",
+                                                  "inflection", "asymmetry"),
+                             fixed = c(NA, 0, 1, NA, NA)))
+
+```
+
+
+```{r load-placebo-mod}
+raw_placebo_data = read_csv(mlx_data_here("amp-mlx-vl-placebo.csv"), col_types = cols())
+
+placebo_ic80_range = c(min(raw_placebo_data$gmt80ls), max(raw_placebo_data$gmt80ls))
+placebo_ic50_range = c(min(raw_placebo_data$gmt50ls), max(raw_placebo_data$gmt50ls))
+
+placebo_pop_ests = stack_model_ests(adj_placebo_model_loc)
+placebo_pop_wide = placebo_pop_ests %>%
+  dplyr::select(parameter, value) %>% spread(parameter, value)
+
+theta_vl_placebo = prep_vl_model_parms(mlx_project = adj_placebo_model_loc) %>%
+  dplyr::select(-initT)
+
+burst_effect = function(ic80, pop_parms = placebo_pop_wide) {
+  lp = placebo_pop_wide$lp_pop + placebo_pop_wide$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
+  10^(lp)
+}
+
+```
+
+```{r load-trt-mod}
+
+raw_vrc01_data = read_csv(mlx_data_here("amp-mlx-vl-vrc01.csv"), col_types = cols())
+
+vrc01_ic80_range = c(min(raw_vrc01_data$gmt80ls), max(raw_vrc01_data$gmt80ls))
+vrc01_ic50_range = c(min(raw_vrc01_data$gmt50ls), max(raw_vrc01_data$gmt50ls))
+
+pkpd_models_rho_omega = tribble(
+  ~model_label, ~model_location,
+  "pkpd only", "PKPD/pkpd-model",
+  "indirect + pkpd", "PKPD/adj-pkpd-model",
+)
+
+pkpd_models_pkpd_only = tribble(
+  ~model_label, ~model_location,
+  "pkpd only (no rho omega)", "PKPD/pkpd-model-no-omega"
+)
+
+pkpd_models_final = tribble(
+  ~model_label, ~model_location,
+  "indirect + pkpd (no rho omega)", "PKPD/adj-pkpd-model-no-omega",
+)
+
+rho_indiv_parms = stack_indiv_parms(pkpd_models_rho_omega$model_location,
+                                pkpd_models_rho_omega$model_label)
+
+vrc01_pop_ests = stack_model_ests(
+  bind_rows(pkpd_models_pkpd_only, pkpd_models_final)$model_location,
+  bind_rows(pkpd_models_pkpd_only, pkpd_models_final)$model_label
+  )
+vrc01_pop_ests_wide = vrc01_pop_ests %>%
+  dplyr::select(model, parameter, value) %>% spread(parameter, value)
+
+vrc01_pkpd_data = read_csv(here('output/pk-modeling/sim-pk-withVLneut.csv'), col_types = cols())
+vrc01_first_pos = subset(vrc01_pkpd_data, first_positive) %>%
+  mutate(PT80 = centr_conc/gmt80ls)
+
+theta_vl_vrc01 = prep_vl_model_parms(mlx_project = pkpd_models_final$model_location) 
+
+```
+
+```{r pk-setup}
+pk_parms = tribble(
+  ~parameter, ~value,
+  "Cl", 0.575,
+  "V1", 3.532,
+  "V2", 4.749,
+  "Q", 0.676
+)
+theta_pk = create_theta(pk_parms)
+
+pk_sim_data = read_csv(here("output/pk-modeling/sim-pk-withVLneut.csv"), col_types = cols())
+conc_range = range(pk_sim_data$centr_conc, na.rm = T)
+
+```
+
+# Placebo 
+
+the effect on log10 p:
+
+$$lp = lp_0 + \beta_{IC80} (log_{10}IC80 - 0.638)$$
+
+where 0.638 is the mean of the log10 IC80.
+
+```{r}
+
+# overlay the individual draws, at peak I
+
+tibble(
+  ic80 = seq(min(raw_placebo_data$gmt80ls), max(raw_placebo_data$gmt80ls), by = 0.1),
+  p = burst_effect(ic80)
+) %>%
+  ggplot(aes(x = ic80, y = p)) +
+  geom_line() +
+  scale_x_log10() +
+  labs(y = "Avg. infectious virions / cell day")
+
+```
+
+
+```{r placebo-indirect}
+ic80_range_burst_size = c(round(placebo_ic80_range, 2), 1, 10)
+
+burst_size_models = map_df(ic80_range_burst_size, function(i){
+  theta_vl = theta_vl_placebo
+  theta_vl$p = burst_effect(i, pop_parms = placebo_pop_wide)
+  
+  run_pkpd_models(
+        0:100,
+        holte_pkpd_model,
+        theta_pk = theta_pk,
+        theta_vl = theta_vl,
+        theta_pd = tibble(IC80 = 4, rho = Inf, h = 1),
+        infection_time = 0,
+        initial_pk_dose = 0
+      ) %>% 
+        mutate(isolate_ic80 = i, burst_size = theta_vl$p)
+  })
+
+placebo_adj_vl_pl = ggplot(burst_size_models, aes(x = time/7, y = log10V, 
+                                                  colour = factor(isolate_ic80))) +
+  geom_line() +
+  labs(x = "Weeks post-acquisition", y = "Placebo-population log10 VL",
+       colour = "VRC01 IC80 of acquired isolate") +
+  scale_color_viridis_d() +
+  scale_y_continuous(breaks = -1:8)
+
+placebo_adj_vl_pl
+# inset the ic80 vs pi plot # 2 x 2
+# 4 x 3
+
+```
+
+# VRC01 analysis
+
+## Rho distribution
+
+Based on the placebo model, sensitive viruses have higher initial VL. The PKPD model would have an opposing effect because sensitive viruses are neutralized when VRC01 is present. At the population average burst size (fairly resistant virus) the burst size would be under-estimated for sensitive viruses and the model find an optima with a high potency reduction (the PKPD effect doesnt seem to be doing much). 
+
+ Without omega, the estimates are similar and lower. Why this is dependent on the omega specification is complex and seemingly related to the flexibility of model draws and complexity of parameter correlations. Across all participants, the variation is fairly hidden as most viruses are resistant. However, among participants with sensitive viruses (< 1), there is variability of the parameter draws and changes in the medians across models that is shown in the pkpd-model html. 
+
+```{r}
+
+ggplot(rho_indiv_parms, aes(x = model, y = 10^lrho_mode)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_y_log10(breaks = c(500, 1000, 1500)) +
+  geom_point(data = vrc01_pop_ests_wide, aes(y = 10^lrho_pop),
+             shape = "x", size = 3)
+
+```
+
+## Dose-response
+
+Seems very minimal in the range of the data
+
+```{r dr-setup}
+id80_max = conc_range[2]/placebo_ic80_range[1]
+id50_max = conc_range[2]/placebo_ic50_range[1]
+
+id50_max_vrc01 = conc_range[2]/vrc01_ic50_range[1]
+id80_max_vrc01 = 4^(-1/amp_theta_pd$h) * id50_max_vrc01
+
+dose_response = tibble(
+  #id80 = seq(id80_range[1], id80_range[2], by = 0.1),
+  id50 = 10^seq(-1, log10(id50_max), by = 0.1),
+  PT80 = 4^(-1/amp_theta_pd$h) * id50,
+  in_vitro = 1/(1+(id50)^(-amp_theta_pd$h)),
+  in_vivo = 1/(1+(id50/amp_theta_pd$rho)^(-amp_theta_pd$h)),
+  pe = predict(empirical_amp_fit, data.frame(PT80 = PT80))
+)
+  
+```
+
+```{r dr-plt}
+pkpd_dr_pl = dose_response %>%
+  gather("type", "neutralization", in_vitro, in_vivo) %>%
+  mutate(iip = -log10(1 - neutralization)) %>%
+  gather("outcome", "value", neutralization, iip, factor_key = T) %>%
+  ggplot(aes(x = PT80, y = value)) +
+  geom_line(aes(colour = type)) +
+  scale_x_log10() +
+  annotate("rect", xmin = id80_max_vrc01, xmax = Inf, ymin = -Inf, ymax = Inf, alpha =0.5, 
+           fill = "gray") +
+  annotate("text", label = 'placebo\nIC80\nonly', x = 7000, y = 0.65) +
+  labs(y = "", colour = "VRC01 PKPD Activity", x = "Theoretical AMP PT80 Range") +
+  geom_vline(data = pt80_efficacy, aes(xintercept = PT80), linetype = "dashed") +
+  geom_text(data = pt80_efficacy, aes(label = PE_pct), angle = 90, y = 0.65, vjust = 0) +
+  facet_wrap(~outcome, scales = "free_y", nrow = 1, strip.position = "left") +
+  strip_as_yaxis
+
+pkpd_dr_pl
+
+```
+
+
+```{r}
+
+pkpd_dr_pl_alt = dose_response %>%
+  gather("type", "neutralization", in_vitro, in_vivo, pe) %>%
+  mutate(
+    iip = -log10(1 - neutralization),
+    percentage = neutralization * 100
+    ) %>%
+  gather("outcome", "value", percentage, iip, factor_key = T) %>%
+  mutate(
+    activity = factor(type, levels = c("in_vitro", "in_vivo", "pe"),
+                      labels = c("Neutralization (in vitro)", "PKPD (in vivo)", "PE"))
+  ) %>%
+  ggplot(aes(x = PT80, y = value)) +
+  geom_line(aes(colour = activity)) +
+  scale_x_log10() +
+  annotate("rect", xmin = id80_max_vrc01, xmax = Inf, ymin = -Inf, ymax = Inf, alpha =0.5, 
+           fill = "gray") +
+  annotate("text", label = 'placebo\nIC80\nonly', x = 7000, y = 5) +
+  labs(y = "", colour = "VRC01 Activity", x = "Theoretical AMP PT80 Range") +
+  facet_wrap(~outcome, scales = "free_y", nrow = 1, strip.position = "left") +
+  strip_as_yaxis
+
+pkpd_dr_pl_alt
+
+```
+
+## PKPD Effect on Viral Load
+
+```{r setup}
+
+id80_range = c(0, 10, 200, 1000, 2500, 10000)
+
+```
+
+In the context of AMP, need to show the effect of titer on viral load,
+
+- show how R0 and titer are related at time of infection
+- within AMP pick different levels of titer, using VRC01 PK with and without burst size adjustment
+
+### R0 vs. titer
+
+This does not adjust for burst size. If this wer eincluded, at a fixed titer, lower IC80 would have lower extinction probability (higher R0).
+
+```{r r0-titer}
+
+# 0.329877
+# theta_vl_vrc01$Bt0 * 1/(1 + (1000/(0.329877 * amp_theta_pd$rho))^amp_theta_pd$h)
+# 4.995823e-06 * theta_vl_vrc01$p * theta_vl_vrc01$aS / (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23)
+
+
+r0_titer_sim = tibble(
+  PT80 = 1:10000,
+  ID50 = PT80 * 4 ^(1/amp_theta_pd$h),
+  amp_rho = amp_theta_pd$rho,
+  pegu_rho = 100
+  ) %>%
+  gather("potency_reduction", "rho", amp_rho, pegu_rho) %>%
+  mutate(
+    beta_neut = beta_titer_neut(ID50/rho, amp_theta_pd$h),
+    R0 = beta_neut*theta_vl_vrc01$Bt0 * theta_vl_vrc01$p * theta_vl_vrc01$aS /
+        (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23),
+    extinction_prob = pmin(1, 1/R0)
+    ) 
+
+r0_titer_sim %>%
+  ggplot(aes(x = PT80, y = R0)) +
+  geom_line(aes(colour = potency_reduction)) +  
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  scale_x_log10()
+
+
+r0_titer_sim %>%
+  ggplot(aes(x = PT80, y = extinction_prob)) +
+  geom_line(aes(colour = potency_reduction)) +  
+  geom_vline(data = pt80_efficacy, aes(xintercept = PT80), linetype = "dashed") +
+  geom_text(data = pt80_efficacy, aes(label = PE_pct), angle = 90, y = 0.65, vjust = 0) +
+  scale_x_log10()
+
+
+```
+
+### PKPD Trajectories with fixed PT80
+
+Ie, if there were constant levels of bnab with fixed PT80. (no indirect effect)
+
+```{r amp-pkpd-pt80-trajectories}
+
+amp_titer_models = map_df(id80_range, function(pt80){
+  amp_theta_pd$IC80 = 1
+  initial_dose = pt80 * theta_pk$V1
+  theta_pk$Cl = 0
+  theta_pk$Q = 0
+  
+  run_pkpd_models(
+    c(seq(0, 1, by = 0.1), 2:100),
+    holte_pkpd_model,
+    theta_pk = theta_pk,
+    theta_vl = theta_vl_vrc01,
+    theta_pd = amp_theta_pd,
+    infection_time = 0,
+    initial_pk_dose = initial_dose
+  ) %>%
+    mutate(
+      IC80 = 1,
+      PT80 = pt80,
+      min_VL = min(log10V)
+    )
+})
+
+ggplot(amp_titer_models, aes(x = time/7, y = pmax(0.01, centr/IC80), colour = factor(PT80))) +
+  scale_y_log10("PT80", breaks = c(0.01, 10, 100, 1000), 
+                labels = c(0, 10, 100, 1000)) +
+  geom_line() +
+  labs( x = "Weeks relative to crossing detection threshold", colour = "PT80 at infection")
+
+amp_titer_models %>%
+  ggplot(aes(x = time/7, y = pmax(log10(20), log10V), 
+                             colour = factor(PT80))) +
+  scale_linetype_discrete(breaks = T, labels = "Potential suppression") +
+  scale_y_continuous(breaks = c(log10(20), 2:7), labels = c("< LoD", 2:7)) +
+  labs(y = "Log10 VL", x = "Weeks", colour = "Constant PT80", 
+       linetype = "") +
+  geom_line() 
+
+```
+
+### PKPD Trajectories with PK
+
+Direct effect only. PK follows VRC01. Does not currently show AMP dose but a PT80 of 1000 would be like 
+[1000 ug/mL] / IC80 of 1, roughly the peak of high dose
+
+```{r amp-pkpd-trajectories}
+
+amp_pkpd_models = map_df(id80_range, function(pt80){
+  amp_theta_pd$IC80 = 1
+  initial_dose = pt80 * theta_pk$V1
+  
+  run_pkpd_models(
+    c(seq(0, 1, by = 0.1), 2:100),
+    holte_pkpd_model,
+    theta_pk = theta_pk,
+    theta_vl = theta_vl_vrc01,
+    theta_pd = amp_theta_pd,
+    infection_time = 0,
+    initial_pk_dose = initial_dose
+  ) %>%
+    mutate(
+      IC80 = 1,
+      PT80 = pt80,
+      min_VL = min(log10V),
+      min_detection_time = min(time[log10V > log10(20)]),
+      R0 = theta_vl_vrc01$Bt0 * theta_vl_vrc01$p * theta_vl_vrc01$aS /
+        (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23),
+      R0_adj = Bt0_adj[1] * theta_vl_vrc01$p * theta_vl_vrc01$aS /
+        (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23)
+    )
+})
+
+ggplot(amp_pkpd_models, aes(x = time, y = centr/IC80, colour = factor(PT80))) +
+  scale_y_log10("PT80", breaks = c(0.1, 10, 1000)) +
+  geom_line()
+
+# ggplot(amp_pkpd_models, aes(x = (time - min_detection_time)/7, y = centr/IC80, colour = factor(PT80))) +
+#   scale_y_log10("PT80", breaks = c(0.1, 10, 1000)) +
+#   geom_line() +
+#   labs( x = "Weeks relative to crossing detection threshold", colour = "PT80 at infection")
+
+amp_pkpd_models %>%
+  mutate(extinction = min_VL < -2) %>%
+  ggplot(aes(x = time/7, y = pmax(-2, log10V), 
+                             colour = factor(PT80),
+                             linetype = factor(extinction))) +
+  scale_linetype_discrete(breaks = T, labels = "Potential suppression") +
+  labs(y = "Log10 VL", x = "Weeks", colour = "PT80 at infection", 
+       linetype = "") +
+  geom_line() 
+# 
+# 
+# amp_pkpd_models %>%
+#   mutate(extinction = min_VL < -2) %>%
+#   ggplot(aes(x = (time - min_detection_time)/7, y = pmax(-2, log10V), 
+#                              colour = factor(PT80),
+#                              linetype = factor(extinction))) +
+#   scale_linetype_discrete(breaks = T, labels = "Potential suppression") +
+#   scale_y_continuous(breaks = -1:7) +
+#   labs(y = "Log10 VL", x = "Weeks relative to crossing detection threshold", colour = "PT80 at infection", 
+#        linetype = "") +
+#   geom_line() 
+
+```
+
+### PKPD Trajectories with indirect effects with PK
+
+The PK of the ID80 titers are fixed, but they are calculated using different input IC80 because that affects burst size here.
+
+```{r pkpd-indirect}
+
+ic80_range = c(0.1, 1, 10)
+
+amp_pkpd_indirect_models = map_df(id80_range, function(pt80){
+  map_df(ic80_range, function(ic80){
+    
+    amp_theta_pd$IC80 = ic80
+    theta_vl_vrc01$p = burst_effect(ic80, pop_parms = theta_vl_vrc01)
+    
+    initial_dose = pt80 * ic80 * theta_pk$V1
+  
+    run_pkpd_models(
+      c(seq(0, 1, by = 0.1), 2:100),
+      holte_pkpd_model,
+      theta_pk = theta_pk,
+      theta_vl = theta_vl_vrc01,
+      theta_pd = amp_theta_pd,
+      infection_time = 0,
+      initial_pk_dose = initial_dose
+    ) %>%
+      mutate(
+        IC80 = ic80,
+        IC80_lab = paste("IC80 =", ic80),
+        PT80 = pt80,
+        min_VL = min(log10V),
+        min_detection_time = min(time[log10V > log10(20)]),
+        R0 = theta_vl_vrc01$Bt0 * theta_vl_vrc01$p * theta_vl_vrc01$aS /
+          (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23),
+        R0_adj = Bt0_adj[1] * theta_vl_vrc01$p * theta_vl_vrc01$aS /
+          (theta_vl_vrc01$dS * theta_vl_vrc01$dI * 23)
+      )
+  })
+})
+
+ggplot(amp_pkpd_indirect_models, aes(x = time, y = centr/IC80, colour = factor(PT80))) +
+  scale_y_log10("PT80", breaks = c(0.1, 10, 1000)) +
+  facet_wrap(~IC80_lab)+
+  geom_line()
+
+amp_pkpd_indirect_models %>%
+  mutate(extinction = min_VL < -2) %>%
+  ggplot(aes(x = time/7, y = pmax(-2, log10V), 
+                             colour = factor(PT80),
+                             linetype = factor(extinction))) +
+  scale_linetype_discrete(breaks = T, labels = "Potential suppression") +
+  labs(y = "Log10 VL", x = "Weeks", colour = "PT80 at infection", 
+       linetype = "") +
+    facet_wrap(~IC80_lab)+
+  geom_line() 
+
+amp_pkpd_indirect_models %>%
+  mutate(
+    extinction = min_VL < -2,
+    PT80_lab = paste("Infection PT80 =", PT80)) %>%
+  ggplot(aes(x = time/7, y = pmax(-2, log10V), 
+                             colour = factor(IC80),
+                             linetype = factor(extinction))) +
+  scale_linetype_discrete(breaks = T, labels = "Potential suppression") +
+  labs(y = "Log10 VL", x = "Weeks", colour = "IC80 at infection", 
+       linetype = "") +
+    facet_wrap(~PT80_lab)+
+  geom_line() 
+
+```
+
+### Simulated PKPD AMP Summary Measures
+
+Attempt to recreate first positive.
+
+```{r amp-pkpd-sim-summary}
+
+calc_delay = 1
+auc_end = 90
+fine_id80_range = 10^seq(-0.25, log10(id80_max_vrc01), by = 0.1)
+
+amp_titer_vl_summary = map_df(fine_id80_range, function(pt80){
+  amp_theta_pd$IC80 = 1
+  initial_dose = pt80 * theta_pk$V1
+  
+  run_pkpd_models(
+    c(seq(0, 20, by = 0.1), 21:150),
+    holte_pkpd_model,
+    theta_pk = theta_pk,
+    theta_vl = theta_vl_vrc01,
+    theta_pd = amp_theta_pd,
+    infection_time = 0,
+    initial_pk_dose = initial_dose
+  ) %>%
+    mutate(
+      IC80 = 1,
+      PT80 = pt80,
+      min_VL = min(log10V),
+      min_detection_time = min(time[log10V > log10(20)]),
+      PT80_detection = centr[min_detection_time],
+      PT80_2wks = 10^mean(log10(centr[time >= min_detection_time & time < (min_detection_time + 14)]))
+    )
+}) %>%
+  group_by(PT80, PT80_detection, PT80_2wks, min_detection_time) %>%
+  summarize(
+    avg_2wk = mean(log10V[time >= calc_delay & time <= 14+calc_delay]),
+    geo_auc_3mo = tail(pkr::AUC(time[time >= calc_delay & time <= auc_end + calc_delay], 
+                                log10V[time >= calc_delay & time <= auc_end + calc_delay])[,1], 1)/auc_end,
+    avg_2wk_adj = mean(log10V[time >= min_detection_time & time < (min_detection_time + 14)]),
+    geo_auc_3mo_adj = tail(pkr::AUC(time[time >= min_detection_time &
+                                       time <= auc_end + min_detection_time], 
+                                log10V[time >= min_detection_time &
+                                       time <= auc_end + min_detection_time])[,1], 1)/auc_end,
+    .groups = "drop"
+  )
+
+amp_titer_vl_summary %>%
+  gather("measure", "value", avg_2wk_adj) %>%
+  ggplot(aes(x = PT80_2wks, y = value)) +
+  geom_line() +
+  geom_point(data = vrc01_first_pos, aes(x = pmax(0.1, PT80), y = log10vl),
+             alpha = 0.5) +
+scale_x_log10() +
+  labs(y = "predicted first positive", x = "predicted PT80 at first positive") 
+
+
+
+```
+

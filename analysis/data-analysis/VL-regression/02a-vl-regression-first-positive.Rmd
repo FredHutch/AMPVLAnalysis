@@ -83,7 +83,6 @@ trt_ic80_pool_fp = run_vl_drtmle_glm(mdata = first_positive, A_var = "trt_ic80_p
 fp_models = lst(trt_grp_fp, trt_grp_pool_fp, trt_ic80_fp, trt_ic80_pool_fp)
 ```
 
-
 ## Mean first positive viral loads
 
 ```{r fp-mm-table-pool}
@@ -218,6 +217,31 @@ fp_contrast_pls = map(fp_models, ~(
 ))
 
 plot_grid(plotlist = fp_contrast_pls, ncol = 1)
+
+```
+
+## Protocol/Region Comparisons
+
+```{r fp-protocol-comp}
+
+map2_df(fp_models, names(fp_models), ~ (
+  .x[['protocol_contrast']] %>%
+    mutate(
+      mean_diff = round_away_0(est, digits = 3), 
+      model_set = .y,
+      p.value = pretty_pvalues(p.value)) 
+)) %>% 
+  mutate(
+    sens = if_else(str_detect(model_set, "ic80"), "Modification", "Not included"),
+    trt_set = if_else(str_detect(model_set, "pool"), "Pooled", "All doses")
+  ) %>%
+  select(`Viral sensitivity` = sens, `VRC01 Grouping` = trt_set, `Comparison` = contrast, `Mean Diff.` = mean_diff, `p-value` = p.value) %>%
+    write_csv(paste0(table_tag, "protocol-region-comparison.csv")) %>%
+kable(caption = "Differences in first RNA+ log$_{10}$ viral load between protocol/region groups.", 
+        format = "html",
+        digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
 
 ```
 

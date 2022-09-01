@@ -16,6 +16,18 @@
     mutate(model = 'lm')
 }
 
+.get_protocol_contrasts = function(mdata, lm_trt_var){
+  lm_formula = as.formula(paste("log10vl ~ study_region_cat +", lm_trt_var))
+  mod_fit = lm(lm_formula, data = mdata)
+  contrast_obj = emmeans(mod_fit, pairwise ~ study_region_cat, 
+                         adjust = "none", parens = NULL)
+  
+  contrast_obj$contrasts %>%
+    as_tibble() %>%
+    rename(est = estimate) %>%
+    mutate(model = 'lm')
+}
+
 run_vl_lm = function(mdata, formula, lm_trt_var){
   
   mod_fit = lm(formula, data = mdata)
@@ -116,14 +128,16 @@ run_vl_drtmle_glm = function(mdata, A_var,
                             lm_trt_var = lm_trt_var)
       drtmle_mm = bind_rows(drtmle_mm, lm_output[['mm']])
       drtmle_contrast = bind_rows(drtmle_contrast, lm_output[['contrast']])
+      protocol_contrast = .get_protocol_contrasts(mdata, lm_trt_var)
     }
     
     drtmle_mm$trt_var = drtmle_mm[[names(trt_map)[1]]] # generic across models
   }
   
   if(exists('lm_output')){
-    out_list = list(drtmle_fit, lm_output[['lm_mod']], drtmle_mm, drtmle_contrast)
-    names(out_list) = c("fit", "lm_mod", "mm", "contrast")
+    out_list = list(drtmle_fit, lm_output[['lm_mod']], drtmle_mm, 
+                    drtmle_contrast, protocol_contrast)
+    names(out_list) = c("fit", "lm_mod", "mm", "contrast", "protocol_contrast")
   } else{
     out_list = list(drtmle_fit, drtmle_mm, drtmle_contrast)
     names(out_list) = c("fit", "mm", "contrast")
@@ -146,14 +160,13 @@ run_adj_vl_lm = function(mdata, trt_map){
                         lm_trt_var = lm_trt_var)
   
   lm_output[['mm']]$trt_var = lm_output[['mm']][[names(trt_map)[1]]]
+  protocol_contrast = .get_protocol_contrasts(mdata, lm_trt_var)
       
-  out_list = list(lm_output[['lm_mod']], lm_output[['mm']], lm_output[['contrast']])
+  out_list = list(lm_output[['lm_mod']], lm_output[['mm']], lm_output[['contrast']],
+                  protocol_contrast)
   
-  
-  names(out_list) = c("fit", "mm", "contrast")
+  names(out_list) = c("fit", "mm", "contrast", "protocol_contrast")
 
   return(out_list)
   
 }
-
-
