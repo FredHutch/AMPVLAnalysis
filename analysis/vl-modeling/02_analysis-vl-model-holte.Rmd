@@ -12,6 +12,8 @@ output:
 
 Here, we assess the RV217 Holte models to the AMP participants fit using various approaches in fit-vl-model-holte. 
 
+The best approach was refitting the correlations in the placebo population ('refit_corr-placebo'). In the Final unadjusted Model section, further exploration is done for this model including simulating VL via an ODE model.
+
 ```{r load-packages, echo = T, message=F,output=F, warning=F}
 knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
@@ -28,11 +30,16 @@ vl_dir_tag = function(x) paste0("VL/", x)
 vl_model_here = function(x, ...) mlx_model_here(vl_dir_tag(x), ...)
 
 theme_set(theme_bw() + theme(legend.position = "top"))
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
 options(scipen = 999)
 
 rx_lab = tibble(
   rx_code2 = c("C", "T1", "T2"),
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+rx_lab_pool = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat_pool = c("Placebo", "VRC01 (Pooled)", "VRC01 (Pooled)")
 )
 
 save_shared_folder = F
@@ -41,10 +48,15 @@ save_shared_folder = F
 
 ```{r load-data}
 
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
+
 demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
   dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
   distinct() %>%
-  left_join(rx_lab, by = "rx_code2")
+  left_join(rx_lab, by = "rx_code2")  %>%
+  left_join(time_data, by = "pub_id")
+
 stopifnot(nrow(demo_merge) == 158)
 
 dan_holte_est = read_csv(here("output/vl-analysis/estimatedIndividualParameters.txt"), col_types = cols()) %>%
@@ -62,9 +74,6 @@ paul_times = read_csv(clean_data_here("adata-time-summary.csv"), col_types = col
   filter(vl_model_flag) %>%
   mutate(model = "Poisson-fitter", tinf_est = fp_day - tpf_day) %>%
   select(pub_id, model, tinf_est, rx_code2)
-
-time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
-  select(pub_id, contains("_day"))
 
 ```
 
@@ -147,16 +156,14 @@ fits_placebo_train = stack_indiv_fits(vl_dir_tag(placebo_models$model_location),
   mutate(weeks = time / 7, 
          model_general = str_remove(str_split_fixed(model, "-", n = 2)[,1], "holte_")) %>%
   rename(pub_id = ID) %>%
-  left_join(demo_merge, by = "pub_id") %>%
-  left_join(time_data, by = "pub_id")
+  left_join(demo_merge, by = "pub_id")
 
 fits_pool = stack_indiv_fits(vl_dir_tag(holte_models$model_location),
                                  holte_models$model_label) %>%
   mutate(weeks = time / 7, 
          model_general = str_remove(model, "holte_")) %>%
   rename(pub_id = ID) %>%
-  left_join(demo_merge, by = "pub_id") %>%
-  left_join(time_data, by = "pub_id")
+  left_join(demo_merge, by = "pub_id")
 
 
 ```
@@ -212,8 +219,6 @@ pop_ests %>%
 
 Consistency between models among 1., 2 and 3
 Consistence between models/fits between 1 and 2; and 2 and 3 among placebo or treated
-
-
 
 ```{r}
 
@@ -537,6 +542,169 @@ indiv_train_plots = map(split(sort(unique(fits_placebo_train$pub_id)),
 ggsave(here("output/vl-modeling/placebo-train-fits.pdf"), 
        width = 8, height = 10,
        gridExtra::marrangeGrob(indiv_train_plots, nrow=1, ncol=1))
+
+```
+
+# Final Unadjusted Model
+
+```{r setup-final-model, class.source = "fold-show"}
+
+source(here("R", "rxode-funs.R"))
+source(here("R", "summarize_sim_holte_vl.R"))
+source(here("models", "rxode-models", "rxode-models.R"))
+
+unadj_placebo_pop_ests = get_model_ests("VL/holte_vl_refitcorr_placebo") 
+
+unadj_placebo_vl_parms = get_indiv_parms("VL/holte_vl_refitcorr_placebo")
+unadj_vrc01_vl_parms = get_indiv_parms("VL/holte_vl_refitcorr_vrc01")
+
+unadj_vl_parms = bind_rows(unadj_placebo_vl_parms, unadj_vrc01_vl_parms) %>%
+  select(pub_id = id, contains("_mode"), study_region_cat) %>%
+  left_join(demo_merge, by = "pub_id") 
+
+save_shared_folder = F
+
+```
+
+## Simulate VL
+
+```{r rxode-sim}
+
+unadj_vl_sims = map_df(1:nrow(unadj_vl_parms), function(i){
+  parm_set = unadj_vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(c(seq(0, 14, by = 0.1), 15:225), holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+  mutate(pub_id = parm_set$pub_id, weeks = time/7)
+})
+
+final_setpt = map_df(1:nrow(unadj_vl_parms), function(i){
+  parm_set = unadj_vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(950:1000, holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+    mutate(pub_id = parm_set$pub_id)
+}) %>%
+  group_by(pub_id) %>%
+  summarize(final_setpt = mean(log10V), .groups = "drop")
+
+```
+
+```{r spot-check}
+set.seed(15)
+test_ids = sample(unadj_vl_parms$pub_id, 25, replace = F)
+
+mlx_model_fits = get_indiv_fits("VL/holte_vl_refitcorr_placebo") %>%
+  bind_rows(get_indiv_fits("VL/holte_vl_refitcorr_vrc01"))  %>%
+  rename(pub_id = ID) %>%
+  left_join(select(unadj_vl_parms, pub_id, initT_mode), by = "pub_id") %>%
+  mutate(
+    time_adj = time + initT_mode,
+    weeks = time_adj / 7, 
+    log10V = log10(pmax(0.01, indivPredMode)),
+         source = "mlx-sims") %>% 
+  filter(weeks >= 0)
+
+unadj_vl_sims %>%
+  mutate(source = "mlx-rxode") %>%
+  bind_rows(mlx_model_fits) %>%
+  dplyr::filter(pub_id %in% test_ids) %>%
+  ggplot(aes(x = weeks, y = log10V)) +
+  geom_line(aes(colour = source)) +
+  scale_shape_discrete(guide = "none") +
+  facet_wrap( ~ pub_id, nrow = 5, ncol = 5) +
+  coord_cartesian(xlim = c(-5, NA)) +
+  labs(y = "log10 VL") +
+  theme(legend.position = 'top') +
+  ggtitle("spot-check")
+
+```
+
+## Model Summary Measures
+
+```{r}
+
+vl_summary = summarize_sim_holte_vl(vl_sims = unadj_vl_sims, 
+                                    vl_parms = unadj_vl_parms,
+                                    setpt_end = 90, auc_end = 90, 
+                                    max_uplope_time = c(3, 21)) %>%
+  left_join(final_setpt, by = "pub_id")
+
+stopifnot(all(!is.na(vl_summary)))
+stopifnot(nrow(vl_summary) == 158)
+
+```
+
+```{r plot-endpoints, fig.height = 8, fig.width = 7.5}
+
+key_measures = c("upslope_r0", "unadjusted_r0", "model_log10peak", "geo_auc_3mo", "log10_auc_3mo", "model_peak_day",
+                 "model_setpt")
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+
+(vl_summary %>%
+  left_join(rx_lab_pool, by = "rx_code2") %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"))
+    ) %>%
+  select(pub_id, key_measures, ic80gte1, trt_cat_pool) %>%
+  pivot_longer(names_to = "measure", values_to = "value", cols = key_measures) %>%
+  ggplot(aes(x = trt_cat_pool, y = value, colour = ic80gte1)) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.75)) +
+  facet_wrap(~measure, strip.position = "left", scales = "free_y") +
+  ylab("") + xlab("") +
+  scale_color_manual("", values = ic80gte1_colors) +
+  strip_as_yaxis +
+    theme(legend.direction = "vertical")) %>%
+  lemon::reposition_legend(position =  'center',  panel = 'panel-3-2')
+
+```
+
+### Measure comparisons
+
+```{r setpt-comp}
+
+vl_summary %>%
+  dplyr::select(contains("setpt")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r auc-comp}
+
+vl_summary %>%
+  dplyr::select(contains("auc")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r r0-comp}
+
+vl_summary %>%
+  dplyr::select(contains("r0")) %>%
+  ggpairs(progress = F)
+
+```
+
+## Save final model
+
+```{r save-output, class.source = "fold-show"}
+
+write_csv(unadj_placebo_pop_ests, clean_data_here("unadjusted_model_vl_popparms.csv"))
+
+write_csv(vl_summary, clean_data_here("unadjusted_model_vl_summary.csv"))
+
+```
+
+```{r save-shared, eval = save_shared_folder}
+
+write_csv(tibble(), 
+           paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!VL MODEL UPDATED - ",
+                  Sys.Date()))
+
+write_csv(placebo_pop_ests, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_popparms.csv")
+
+write_csv(vl_summary, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_summary.csv")
 
 ```
 

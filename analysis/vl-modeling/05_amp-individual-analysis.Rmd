@@ -1,5 +1,5 @@
 ---
-title: "Results from final Holte model (unadjusted analysis)"
+title: "Results from final unadjusted Holte model"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
 output: 
@@ -282,32 +282,5 @@ write_csv(tibble(),
 write_csv(placebo_pop_ests, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_popparms.csv")
 
 write_csv(vl_summary, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/unadjusted_model_vl_summary.csv")
-
-```
-
-
-```{r old-model-comp, eval = F}
-
-
-dan_summary = read_csv(here("output/other", "dan-calc-allmetrics.csv"), col_types = cols()) %>%
-  janitor::clean_names() %>%
-  select(pub_id = pid, set_pt, dan_setpt = model_set_pt, dan_avg = avg, dan_peak = model_peak, dan_peak_day = model_peak_day,
-         dan_upslope = model_upslope)
-
-test_data = full_join(dan_summary, vl_summary, by = "pub_id")
-
-
-ggplot(test_data, aes(x = dan_setpt, y = model_setpt)) + geom_point()
-
-ggplot(test_data, aes(x = set_pt, y = model_setpt)) + geom_point()
-
-ggplot(test_data, aes(x = dan_peak, y = model_log10peak)) + geom_point()
-
-ggplot(test_data, aes(x = dan_peak_day, y = model_peak_day)) + geom_point()
-
-ggplot(test_data, aes(x = dan_upslope, y = max_upslope)) + geom_point()
-
-ggplot(test_data, aes(x = dan_avg, y = log10_auc_3mo)) + geom_point()
-ggplot(test_data, aes(x = dan_avg, y = geo_auc_3mo)) + geom_point()
 
 ```

@@ -1,5 +1,5 @@
 ---
-title: "Placebo Holte AMP Model"
+title: "Placebo Holte AMP PKPD (indirect) Model"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
 output: 
@@ -501,6 +501,39 @@ indiv_plots = map(split(sort(unique(cns_adj_fits$pub_id)),
 ggsave(here("output/pkpd-modeling/adj-placebo-fits.pdf"), 
        width = 8, height = 10,
        gridExtra::marrangeGrob(indiv_plots, nrow=1, ncol=1))
+
+```
+
+# Save adjusted pop parms
+
+## Compare infection times
+
+The infection times were redrawn for the placebos with this approach.
+
+
+```{r}
+
+unadj_vl_parms = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols())
+
+cns_adj_indiv_parms %>%
+  filter(model == "cns-pi") %>%
+  bind_rows(mutate(unadj_vl_parms, model = "unadjusted")) %>%
+  filter(rx_code2 == "C") %>%
+  ggplot(aes(x = gmt80ls, y = initT_mode)) +
+  geom_point(aes(colour = model)) +
+  geom_line(aes(group = pub_id)) +
+  scale_x_log10()
+
+
+```
+
+## Save pop parms
+
+```{r, class.source = "fold-show"}
+
+adj_placebo_pop_ests = get_model_ests("VL-adjusted-placebo/cns-pi")
+
+write_csv(adj_placebo_pop_ests, clean_data_here("adjusted_placebo_vl_popparms.csv"))
 
 ```
 

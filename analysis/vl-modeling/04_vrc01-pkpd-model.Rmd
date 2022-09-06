@@ -67,7 +67,8 @@ raw_data = read_csv(mlx_data_here("amp-mlx-pkpd-holteT0.csv"), col_types = cols(
 
 unadj_placebo_pop = read_csv(clean_data_here("unadjusted_model_vl_popparms.csv"), 
                              col_types = cols())
-adj_placebo_pop = stack_model_ests(adj_placebo_model_loc)  
+adj_placebo_pop = read_csv(clean_data_here("adjusted_placebo_vl_popparms.csv"), 
+                             col_types = cols())
 
 unadj_placebo_init = unadj_placebo_pop %>%
   select(parameter, value) %>% spread(parameter, value)
