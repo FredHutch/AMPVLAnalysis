@@ -37,9 +37,6 @@ source(here("R", "fix-parm-funs.R"))
 source(here("R", "mlx-plot-funs.R"))
 options(knitr.kable.NA = '')
 
-unadj_placebo_model_loc = "VL/holte_vl_refitcorr_placebo"
-adj_placebo_model_loc = "VL-adjusted-placebo/cns-pi"
-
 pkpd_model_tag = function(x) paste0("PKPD/", x)
 
 rx_lab = tibble(
@@ -57,10 +54,14 @@ options(scipen = 999)
 
 ```{r load-funs-data}
 
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
+
 demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
   dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2, fp_day) %>% 
   distinct() %>%
-  left_join(rx_lab, by = "rx_code2")
+  left_join(rx_lab, by = "rx_code2")%>%
+  left_join(time_data, by = "pub_id")
 stopifnot(nrow(demo_merge) == 158)
 
 raw_data = read_csv(mlx_data_here("amp-mlx-pkpd-holteT0.csv"), col_types = cols())
@@ -82,6 +83,7 @@ adj_placebo_init = adj_placebo_pop %>%
 
 ```{r vl-dose-setup}
 # check_data("amp-mlx-pkpd-holteT0.csv")
+# check_data("amp-mlx-pkpd-indirect-holteT0.csv")
 
 pkpd_types = tribble(
     ~var_name, ~type,
@@ -120,11 +122,11 @@ stopifnot(all(pkpd_types$var_name == names(raw_data)))
 
 #these functions are run everytime
 
-setup_pkpd_model = function(inits){
+setup_pkpd_model = function(inits, mlx_data = "amp-mlx-pkpd-holteT0.csv"){
   
   amp_recipe(
     model_text_file = "PKPD_Holte.txt",
-    data_file = "amp-mlx-pkpd-holteT0.csv",
+    data_file = mlx_data,
     variable_types = pkpd_types,
     initial_estimates = TRUE,
     obs_dist = "lognormal",
@@ -152,11 +154,11 @@ setup_pkpd_model = function(inits){
 
 ## Adjusted PKPD
 
-Using IC80 adjustment on log pi
+Using IC80 adjustment on log pi. Uses infection times from indirect model applied to VRC01 group.
 
 ```{r adj-pkpd-modeling, eval = F}
 
-setup_pkpd_model(adj_placebo_init)
+setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
 
 setCovariateModel(lp = c(log_ic80_ctr = TRUE))
 setPopulationParameterInformation(
@@ -172,7 +174,7 @@ save_project(pkpd_model_tag("adj-pkpd-model"))
 
 # -- no omega for log rho
 
-setup_pkpd_model(adj_placebo_init)
+setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
 
 setCovariateModel(lp = c(log_ic80_ctr = TRUE))
 setPopulationParameterInformation(

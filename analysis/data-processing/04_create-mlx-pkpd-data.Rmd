@@ -31,12 +31,14 @@ The easiest approach is to use the fitted PK parameters as regressors and use a 
 dependent variable (viral load) approach.
 
 To that end here, we need to make a dataset that has the following for the VRC01 participants:
+
  - vl measurements (this is the primary stem data to build off of)
    - `data/processed-data/adata-vl.csv`
  - the neutralization inputs: IC50, IC80, and hill slopes
    - `data/processed-data/adata-vl.csv` but need to calculate hill
  - VL infection times (ie, VL dosing)
-   - `data/processed-data/unadjusted_model_vl_summary.csv`
+   - unadjusted estimates: `data/processed-data/unadjusted_model_vl_summary.csv`
+   - adjusted (indirect estimates): `data/processed-data/adjusted_vrc01_parms.csv` 
    - need to scale initT_mode relative enrollment infection day: fp_day - initT_mode
  - direct VRC01 dosing information
    - `data/processed-data/dosing-data.csv`
@@ -48,7 +50,16 @@ Time should be relative to enrollment.
 ```{r load-data}
 adata_vl = read_csv(clean_data_here("adata-vl.csv"), col_types = cols())
 
-vl_dose = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+vl_dose_unadj = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+  mutate(TIME = fp_day - initT_mode) %>%
+  distinct(pub_id, TIME) %>%
+  mutate(
+    TIME = floor(TIME), # just to keep round numbers
+    AMT = 0.01/1e3,
+    ADM = 2
+    )
+
+vl_dose_adj = read_csv(clean_data_here("adjusted_vrc01_parms.csv"), col_types = cols()) %>%
   mutate(TIME = fp_day - initT_mode) %>%
   distinct(pub_id, TIME) %>%
   mutate(
@@ -85,7 +96,11 @@ demo_dat = adata_vl %>%
     hill_mf = hill_slope(gmt50mf, gmt80mf)
   )
 
-all_dose_data = bind_rows(vl_dose, pk_dose_data) %>%
+all_dose_data_unadj = bind_rows(vl_dose_unadj, pk_dose_data) %>%
+  filter(pub_id %in% pkpd_ptids) %>%
+    arrange(pub_id, TIME)
+
+all_dose_data_adj = bind_rows(vl_dose_adj, pk_dose_data) %>%
   filter(pub_id %in% pkpd_ptids) %>%
     arrange(pub_id, TIME)
 
@@ -135,10 +150,12 @@ demo_dat_prep %>%
 
 # Finalize data
 
+## Infection times from unadjusted model
+
 ```{r}
 
 final_data = vl_stem %>%
-  bind_rows(all_dose_data) %>%
+  bind_rows(all_dose_data_unadj) %>%
   mutate(
     DV = if_else(is.na(DV), ".", as.character(DV)),
     cens = if_else(is.na(cens), ".", as.character(cens)),
@@ -157,10 +174,42 @@ stopifnot(all(!is.na(final_data)))
 
 ```
 
-```{r save}
+```{r save-unadj}
 
 glimpse(final_data)
 
 write_csv(final_data, mlx_data_here("amp-mlx-pkpd-holteT0.csv"))
+
+```
+
+## Infection times from indirect adjusted model
+
+```{r}
+
+final_data_adj = vl_stem %>%
+  bind_rows(all_dose_data_adj) %>%
+  mutate(
+    DV = if_else(is.na(DV), ".", as.character(DV)),
+    cens = if_else(is.na(cens), ".", as.character(cens)),
+    AMT = if_else(is.na(AMT), ".", as.character(AMT)),
+    ADM = if_else(is.na(ADM), ".", as.character(ADM)),
+    RATE = if_else(is.na(RATE), ".", as.character(RATE)),
+    limit = if_else(cens == 1, "0", if_else(cens == -1, "1e9", "."))
+  ) %>%
+  arrange(pub_id, TIME) %>%
+  left_join(demo_dat_prep, by = "pub_id") %>%
+  left_join(pk_parms, by = "pub_id")
+
+
+stopifnot(n_distinct(final_data_adj$pub_id) == 96)
+stopifnot(all(!is.na(final_data_adj)))
+
+```
+
+```{r save-adj}
+
+glimpse(final_data_adj)
+
+write_csv(final_data_adj, mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"))
 
 ```

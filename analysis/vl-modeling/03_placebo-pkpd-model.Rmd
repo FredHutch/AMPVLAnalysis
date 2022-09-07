@@ -59,11 +59,14 @@ options(scipen = 999)
 ```
 
 ```{r load-funs-data}
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
 
 demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
   dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
   distinct() %>%
-  left_join(rx_lab, by = "rx_code2")
+  left_join(rx_lab, by = "rx_code2") %>%
+  left_join(time_data, by = "pub_id")
 stopifnot(nrow(demo_merge) == 158)
 
 raw_data = read_csv(mlx_data_here("amp-mlx-vl-placebo.csv"), col_types = cols())
@@ -527,6 +530,21 @@ cns_adj_indiv_parms %>%
 
 ```
 
+```{r}
+
+cns_adj_indiv_parms %>%
+  filter(model == "cns-pi") %>%
+  mutate(model = "cns_pi") %>%
+  bind_rows(mutate(unadj_vl_parms, model = "unadjusted")) %>%
+  filter(rx_code2 == "C") %>%
+  select(pub_id, initT_mode, model) %>%
+  pivot_wider(values_from = initT_mode, names_from = model) %>%
+  ggplot(aes(x = unadjusted, y = cns_pi)) +
+  geom_point() +
+  ggtitle("placebo infection time ests")
+
+```
+
 ## Save pop parms
 
 ```{r, class.source = "fold-show"}
@@ -574,4 +592,50 @@ check_init_assignment(adj_placebo_inits, exclude_check = "")
 runScenario()
 
 save_project(adj_model_tag("cns-pi-vrc01"))
+```
+
+## Save adjusted infection times
+
+```{r}
+adj_vrc01_parms = get_indiv_parms(adj_model_tag("cns-pi-vrc01")) %>%
+  rename(pub_id = id)
+
+adj_vrc01_parms_out = adj_vrc01_parms %>%
+  left_join(demo_merge, by = "pub_id")
+
+stopifnot(nrow(adj_vrc01_parms_out) == 158 - 62)
+
+```
+
+
+```{r}
+
+mutate(adj_vrc01_parms_out, model = "cns_pi") %>%
+  bind_rows(mutate(unadj_vl_parms, model = "unadjusted")) %>%
+  filter(rx_code2 != "C") %>%
+  select(pub_id, initT_mode, model) %>%
+  pivot_wider(values_from = initT_mode, names_from = model) %>%
+  ggplot(aes(x = unadjusted, y = cns_pi)) +
+  geom_point()  +
+  ggtitle("vrc01 infection time ests")
+
+```
+
+```{r}
+
+mutate(adj_vrc01_parms_out, model = "cns-pi") %>%
+  bind_rows(mutate(unadj_vl_parms, model = "unadjusted")) %>%
+  filter(rx_code2 != "C") %>%
+  ggplot(aes(x = gmt80ls, y = initT_mode)) +
+  geom_point(aes(colour = model)) +
+  geom_line(aes(group = pub_id)) +
+  scale_x_log10() +
+  scale_y_continuous("inf time est (VRC01 groups)")
+
+```
+
+```{r, class.source = "fold-show"}
+
+write_csv(adj_vrc01_parms_out, clean_data_here("adjusted_vrc01_parms.csv"))
+
 ```
