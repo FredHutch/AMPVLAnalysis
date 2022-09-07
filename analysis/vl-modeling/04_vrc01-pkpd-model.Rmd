@@ -283,9 +283,7 @@ pkpd_pop_ests %>%
 
 ```
 
-## Fits 
-
-Only look at continuous covariate as the categorical was not significant.
+## MLX Fits 
 
 ```{r pkpd-fits}
 

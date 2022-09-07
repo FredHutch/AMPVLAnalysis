@@ -32,9 +32,10 @@ The model fitting procedure is as follows:
   - No results datasets saved from here directly.
   - MLX model output stored in `/models/PKPD/`
 - 05\) amp-model-analysis
-  - TBD: simulate individual VL from key models to compare trajectories
-  - TBD: generate the final AIC supplementary tables describing model building
+  - Simulate individual VL from key models to compare trajectories
+  - Generate the final AIC supplementary tables describing model building
   - Save vl summary with all key endpoints for statistical analysis
+    - `final_vl_summary.csv`
 - 06\) amp-sim-analysis
   - This generates key manuscripts figures
   - Population-level simulations to illustrate dose-response, direct/indirect effects

@@ -1,0 +1,550 @@
+---
+title: "Results from final AMP VL models"
+author: "Bryan Mayer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+# Overview
+
+This curates the final results from the model building:
+
+- The AIC table showing best models for placebo and VRC01 groups
+  - Selection of "final" models for placebo and VRC01 cohorts
+  - the final adjusted results for placebo just has indirect effects
+  - the final adjusted results for vrc01 has both
+- Look at final model vs. unadjusted results
+  - parameter comparisons
+  - trajectories
+  - vl summary comparisons
+
+Using the final models, simulate the VL. save the key parameters, R0, calculate key model sim results (AUC, set point, upslope). Merge on the observed vl summary.
+
+The following summaries are calculated from model simulations, and claculated by `summarize_sim_holte_vl()` from `summarize_sim_holte_vl.R`
+
+- peak: maximum log10vl
+- peak day
+- 3-mo setpoint: avg log10vl betweens days 90 and 100
+- final setpoint: avg log10vl between days 950 and 1000 (not for analysis)
+- 3-month AUC/t: auc of vl through day 90 (linear up, log down method), divided by 90
+- 3-month geometric AUC: auc of log10 vl through day 90 divided by 90 (trapezoid)
+- upslope: max slope of vl rise between days 0 and (5, 21)
+- upslope R0: (1+upslope/dI):  (Ribeiro, PMC2876646)
+- 'unadjusted' R0: beta * pi * aS / (dS * dI * 23)
+
+This was already done for the unadjusted model in 02_analysis-vl-model-holte.Rmd: `unadjusted_model_vl_summary.csv`
+
+```{r load-packages, echo = T, message=F,output=F, warning=F}
+knitr::opts_chunk$set(echo = T)
+library(VISCfunctions)
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(GGally)
+# library(pkr) use but dont load
+source(here("R", "directory-funs.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("R", "summarize_sim_holte_vl.R"))
+source(here("R", "rxode-funs.R"))
+source(here("models", "rxode-models", "rxode-models.R"))
+source(here("models", "rxode-models", "rxode-pkpd-models.R"))
+
+hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
+
+knitr::opts_chunk$set(dev = c("png", "pdf"))
+
+strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
+theme_set(theme_bw() + theme(legend.position = "top"))
+options(scipen = 999)
+
+rx_lab = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+rx_lab_pool = tibble(
+  rx_code2 = c("C", "T1", "T2"),
+  trt_cat_pool = c("Placebo", "VRC01 (Pooled)", "VRC01 (Pooled)")
+)
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+
+save_shared_folder = T
+
+```
+
+
+```{r load-raw-data}
+## placebo is the indirect model
+## vrc01 is the full indirect+pkpd model
+final_placebo_loc = "VL-adjusted-placebo/cns-pi"
+final_vrc01_loc = "PKPD/adj-pkpd-model-no-omega"
+
+time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
+  select(pub_id, contains("_day"))
+
+demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+  distinct() %>%
+  left_join(rx_lab, by = "rx_code2") %>%
+  mutate(
+    hill_ls = hill_slope(gmt50ls, gmt80ls),
+    hill_ms = hill_slope(gmt50ms, gmt80ms),
+    hill_mf = hill_slope(gmt50mf, gmt80mf),
+    hill_ls = if_else(gmt80ls < 100, hill_ls, mean(hill_ls[gmt80ls < 100 & rx_code2 != "C"])),
+    hill_ms = if_else(gmt80ms < 100, hill_ms, mean(hill_ms[gmt80ms < 100 & rx_code2 != "C"])),
+    hill_mf = if_else(gmt80mf < 100, hill_mf, mean(hill_mf[gmt80mf < 100 & rx_code2 != "C"])),
+  ) %>%
+  left_join(time_data, by = "pub_id") 
+
+stopifnot(nrow(demo_merge) == 158)
+
+# raw data
+all_indiv_obs = get_indiv_preds("VL/holte_vl_corr_all") %>%
+  rename(pub_id = ID) %>%
+  left_join(select(time_data, pub_id, fp_day), by = "pub_id") %>%
+  mutate(
+    time = time + fp_day,
+    weeks = time/7, 
+    log10V = log10(DV)) %>%
+  select(pub_id, time, weeks, fp_day, DV, log10V, censored)
+
+vrc01_initT = read_csv(clean_data_here("adjusted_vrc01_parms.csv"), col_types = cols()) %>%
+  select(pub_id, initT_mode)
+
+# pk data
+
+pk_pop_ests = get_pop_ests("PK/VRC01AMP_Case-Cntrl") %>%
+  dplyr::select(-se_sa, -rse_sa) %>%
+  spread(key = parameter, value = value)
+
+vrc01_pkpd_dat = read_csv(mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"), col_types = cols())
+
+vrc01_pk_parms = distinct(vrc01_pkpd_dat, pub_id, Cl, V1, Q, V2)
+
+mlx_infection_times = vrc01_pkpd_dat %>% filter(ADM == 2) %>% select(pub_id, infection_day = TIME)
+
+vrc01_dose = vrc01_pkpd_dat %>%
+  filter(ADM == 1) %>%
+  distinct(pub_id, TIME, AMT, RATE) %>%
+  mutate(AMT = as.numeric(AMT), RATE = as.numeric(RATE)) %>%
+  arrange(pub_id, TIME) %>%
+  group_by(pub_id) %>%
+  mutate(DOSENO = row_number()) %>%
+  ungroup()
+
+```
+
+```{r summarize-obs-data}
+vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) 
+
+vl_data_summary = vl_data %>%
+  group_by(pub_id) %>%
+  summarize(
+    first_pos = log10vl[days_fp == 0],
+    n_avg = sum(days_fp >= 0),
+    avg_vl = mean(log10vl[days_fp >= 0]),
+    peak_vl = max(log10vl),
+    peak_day_fp = days_fp[which.max(log10vl)],
+    n_setpt = sum(days_fp > days_fp[which.max(log10vl)] & cens <= 0),
+    setpt = if_else(n_setpt == 0, NA_real_, mean(log10vl[days_fp > days_fp[which.max(log10vl)] & cens <= 0]))
+  )
+stopifnot(nrow(vl_data_summary) == 162)
+
+```
+
+```{r load-pop-parms-fits}
+
+# builds upon placebo model
+final_pop_parms = get_model_ests(final_vrc01_loc) 
+final_pop_theta = prep_vl_model_parms(final_vrc01_loc)
+
+final_mlx_fits = stack_indiv_fits(c(final_placebo_loc, final_vrc01_loc)) %>%
+  rename(pub_id = ID) %>%
+  left_join(demo_merge, by = "pub_id") %>%
+  mutate(
+    time = if_else(rx_code2 == "C", time + fp_day, time), #placebo model scaled to first positive
+    weeks = time / 7,
+    log10V = log10(pmax(20, indivPredMode)),
+    model = "mlx-predict"
+    ) %>%
+  left_join(mlx_infection_times, by = "pub_id")
+
+```
+
+```{r setup-indiv-parms}
+
+# from unadjusted model
+unadj_vl_summary = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+  mutate(
+    infection_time = fp_day - initT_mode,
+    model = 'unadjusted')
+
+# rest combining final models
+
+# just add pop PK parms
+final_placebo_parms = get_indiv_parms(final_placebo_loc) %>%
+  rename(pub_id = id) %>%
+  mutate(
+    study = if_else(str_detect(study_region_cat, "704"), 1, 0),
+    Cl = exp(log(pk_pop_ests$Cl_pop) + pk_pop_ests$beta_Cl_study_1*(study == 1)),
+    V1 = pk_pop_ests$V1_pop,
+    Q = pk_pop_ests$Q_pop,
+    V2 = exp(log(pk_pop_ests$V2_pop) + pk_pop_ests$beta_V2_study_1 * (study == 1))
+  ) %>%
+  select(-study)
+
+final_vrc01_parms = get_indiv_parms(final_vrc01_loc) %>%
+  rename(pub_id = id) %>%
+  left_join(vrc01_initT, by = "pub_id") %>%
+  left_join(vrc01_pk_parms, by = "pub_id")
+
+# explicitly lrho_mode code with "C" to catch other errors
+final_vl_parms = bind_rows(final_placebo_parms, final_vrc01_parms) %>%
+  select(pub_id, contains("_mode"), study_region_cat, Cl, V1, Q, V2) %>%
+  left_join(demo_merge, by = "pub_id") %>%
+  mutate(
+    infection_time = if_else(rx_code2 != "C", floor(fp_day - initT_mode), fp_day - initT_mode), # former matches data setup
+    lrho_mode = if_else(rx_code2 == "C" & is.na(lrho_mode), final_pop_theta$lrho, lrho_mode),
+    V0_mode = 0.01
+  )
+
+stopifnot(nrow(final_vl_parms) == 158)
+stopifnot(all(!is.na(select(final_vl_parms))))
+
+```
+
+# Population Parameters
+
+```{r pop-parms-setup}
+all_models = tribble(
+  ~model_location, ~model_label, ~paper_model,
+  "VL/holte_vl_corr_placebo", "Placebo_Fixed RV217_(Reeves et al., RSIF 2021)", T,
+  "VL/holte_vl_refitomega_placebo", "Placebo_Unadjusted_Refit RV217 Variance", F,
+  "VL/holte_vl_refitcorr_placebo", "Placebo_Unadjusted_Refit RV217 Correlation", T,
+  "VL/holte_vl_refitomegacorr_placebo", "Placebo_Unadjusted_Refit RV217 Variance/Correlation", F,
+  "VL-adjusted-placebo/adj-beta", "Placebo_Adjusted_Cat. IC80-adjusted infectivity", F,
+  "VL-adjusted-placebo/adj-pi", "Placebo_Adjusted_Cat. IC80-adjusted viral burst", F,
+  "VL-adjusted-placebo/adj-kappa", "Placebo_Adjusted_Cat. IC80-adjusted infected cell death", F,
+  "VL-adjusted-placebo/adj-n", "Placebo_Adjusted_Cat. IC80-adjusted Holte power", F,
+  "VL-adjusted-placebo/cns-beta", "Placebo_Adjusted_IC80-adjusted infectivity", F,
+  "VL-adjusted-placebo/cns-pi", "Placebo_Adjusted_IC80-adjusted viral burst", T,
+  "VL-adjusted-placebo/cns-kappa", "Placebo_Adjusted_IC80-adjusted infected cell death", F,
+  "VL-adjusted-placebo/cns-n", "Placebo_Adjusted_IC80-adjusted Holte power", F,
+  "VL/holte_vl_refitcorr_vrc01", "VRC01_PKPD_Unadjusted (RV217 refit correlation)", F,
+  "VL-adjusted-placebo/cns-pi-vrc01", "VRC01_PKPD_Indirect only (IC80-adjusted viral burst)", F,
+  "PKPD/pkpd-model", "VRC01_PKPD_PKPD VRC01-adjusted only (w/ potency reduction variance)", F,
+  "PKPD/pkpd-model-no-omega", "VRC01_PKPD_PKPD VRC01-adjusted only", F,
+  "PKPD/adj-pkpd-model", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted (w/ potency reduction variance)", F,
+  "PKPD/adj-pkpd-model-no-omega", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted", T
+  )
+
+all_pop_est = stack_model_ests(all_models$model_location, all_models$model_label) %>%
+  left_join(all_models, by = c("model" = "model_label")) %>%
+  separate(model, into = c("Cohort", "Virus-adjusted", "Model Description"), sep = "_", remove = F) %>%
+  mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter),
+    `Virus-adjusted` = factor(`Virus-adjusted`,
+                              levels = c("Fixed RV217", "Unadjusted", "Adjusted", "PKPD"))
+  ) 
+```
+
+## Model AIC Comparisons
+
+```{r bic-table}
+
+all_pop_est %>%
+  filter(parameter == "LogLik" | parameter == "BICc") %>% 
+  select(-se_sa, -rse_sa, -model) %>%
+  spread(parameter, value) %>%
+  rename(`Analysis Model` = paper_model) %>%
+  arrange(`Virus-adjusted`, -BICc) %>%
+  write_csv(here("output/pkpd-modeling/model-information-criteria.csv")) %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Model information criteria") %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1:2, valign = "top")
+
+```
+
+## Model building population parameters
+
+```{r pop-parms}
+
+all_pop_est %>%
+  mutate(
+    keep =  model == "Placebo_Fixed RV217_(Reeves et al., RSIF 2021)" | !is.na(rse_sa)
+  ) %>%
+  filter(paper_model & keep & !parameter %in% c("LogLik","OFV", "BIC", "BICc", "AIC", "V0_pop")) %>%
+  select(-`Virus-adjusted`, -model_location, -model) %>%
+  dplyr::mutate(
+    parameter = fct_relevel(factor(parameter, levels = unique(all_pop_est$parameter)), "lrho_pop", after = 7),
+    parameter = fct_relevel(parameter, "beta_lp_log_ic80_ctr", after = 5),
+    value =  if_else(parameter == "dS_pop", value * 10000, value),
+    estimate_rse = if_else(!is.na(rse_sa) & `Model Description` != "(Reeves et al., RSIF 2021)",
+                           stat_paste(value, abs(rse_sa), digits = 2),
+                           stat_paste(value, digits = 2)) 
+    ) %>%
+  arrange(parameter) %>%
+  mutate(
+    parameter = str_remove(as.character(parameter), "_pop"),
+    parameter =  if_else(parameter == "dS", "dS * 10^-4", parameter)
+  ) %>%
+  dplyr::select(`Model Description`, parameter, estimate_rse) %>% 
+  pivot_wider(values_from = estimate_rse, names_from = `Model Description`)  %>%
+  write_csv(here("output/pkpd-modeling/pop-model-parms.csv")) %>%
+  kable(format = "html", booktabs = TRUE, linesep = "", escape = FALSE,
+        caption = "Fitted population model parameters (%RSE) at each model building step. Empty cells indicate parameter value taken from previous model step.") %>%
+  kable_styling(full_width = F)
+
+```
+
+# Simulate VL
+
+```{r rxode-sim}
+
+unadj_vl_sims = map_df(1:nrow(unadj_vl_summary), function(i){
+  parm_set = unadj_vl_summary[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(c(seq(0, 14, by = 0.1), 15:225), holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+  mutate(
+    pub_id = parm_set$pub_id, 
+    time = time + parm_set$fp_day - parm_set$initT_mode,
+    weeks = time/7,
+    model = "unadjusted", 
+    fp_day = parm_set$fp_day,
+    infection_day = parm_set$fp_day - parm_set$initT_mode
+    )
+})
+
+vl_sims = map_df(1:nrow(final_vl_parms), function(i){
+  parm_set = final_vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  
+  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
+  if(nrow(dosing) == 0) dosing = NULL
+  
+  infection_day = parm_set$infection_time
+  mtime = c(0:(infection_day - 1), 
+            seq(infection_day, infection_day + 50, by = 0.1), 
+            infection_day + 51:225)
+  theta_pk = select(parm_set, Cl, V1, Q, V2)
+  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
+                    rho = 10^parm_set$lrho_mode, 
+                    h = parm_set$hill_ls)
+  
+  run_pkpd_models(mtime,      
+                  holte_pkpd_model,
+                  theta_pk = theta_pk,
+                  theta_vl = prep_vl_model_parms(mode_parms = parm_set),
+                  theta_pd = theta_pd,
+                  infection_time = infection_day,
+                  infusion_pk_dosing = dosing) %>%
+  mutate(
+    fp_day = parm_set$fp_day,
+    infection_day = infection_day,
+    pub_id = parm_set$pub_id, 
+    weeks = time/7, 
+    model = "final")
+})
+
+all_sims = bind_rows(unadj_vl_sims, vl_sims, final_mlx_fits)
+
+```
+
+```{r save-fits}
+
+placebo_ids = subset(final_vl_parms, rx_code2 == "C")$pub_id
+
+# these all look great
+indiv_plots_placebo = map(split(sort(placebo_ids),
+                         ceiling(seq_along(placebo_ids)/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    all_sims %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks - fp_day/7, y = log10V)) +
+                      geom_line(aes(colour = model)) +
+                      geom_point(data = obs_dat, aes(shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/pkpd-modeling/final-placebo-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_plots_placebo, nrow=1, ncol=1))
+
+
+vrc01_ids = subset(final_vl_parms, rx_code2 != "C")$pub_id
+indiv_plots_vrc01 = map(split(sort(vrc01_ids),
+                         ceiling(seq_along(vrc01_ids)/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    all_sims %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks - fp_day/7, y = log10V)) +
+                      geom_line(aes(colour = model)) +
+                      geom_point(data = obs_dat, aes(shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/pkpd-modeling/final-vrc01-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_plots_vrc01, nrow=1, ncol=1))
+
+```
+
+# Model Summary Measures
+
+```{r}
+
+# pk is not relevant
+final_setpt = map_df(1:nrow(final_vl_parms), function(i){
+  parm_set = final_vl_parms[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  run_vl_model(950:1000, holte_model, 
+               theta = prep_vl_model_parms(mode_parms = parm_set)) %>%
+    mutate(pub_id = parm_set$pub_id)
+}) %>%
+  group_by(pub_id) %>%
+  summarize(final_setpt = mean(log10V), .groups = "drop")
+
+
+vl_summary = vl_sims %>%
+  filter(time >= infection_day) %>%
+  mutate(time = time - infection_day) %>%
+  summarize_sim_holte_vl(vl_sims_dat = ., 
+                                    vl_parms = rename(final_vl_parms, model_infection_day = infection_time),
+                                    setpt_end = 90, auc_end = 90, 
+                                    max_uplope_time = c(3, 21)) %>%
+  left_join(final_setpt, by = "pub_id")
+
+stopifnot(all(!is.na(vl_summary)))
+stopifnot(nrow(vl_summary) == 158)
+
+```
+
+```{r plot-endpoints, fig.height = 8, fig.width = 7.5}
+
+key_measures = c("upslope_r0", "unadjusted_r0", "model_log10peak", "geo_auc_3mo", "log10_auc_3mo", "model_peak_day",
+                 "model_setpt")
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+
+(vl_summary %>%
+  left_join(rx_lab_pool, by = "rx_code2") %>%
+  mutate(
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"))
+    ) %>%
+  select(pub_id, key_measures, ic80gte1, trt_cat_pool) %>%
+  pivot_longer(names_to = "measure", values_to = "value", cols = key_measures) %>%
+  ggplot(aes(x = trt_cat_pool, y = value, colour = ic80gte1)) +
+  geom_boxplot() +
+  geom_point(position = position_dodge(width = 0.75)) +
+  facet_wrap(~measure, strip.position = "left", scales = "free_y") +
+  ylab("") + xlab("") +
+  scale_color_manual("", values = ic80gte1_colors) +
+  strip_as_yaxis +
+    theme(legend.direction = "vertical")) %>%
+  lemon::reposition_legend(position =  'center',  panel = 'panel-3-2')
+
+```
+
+## Measure comparisons
+
+```{r setpt-comp}
+
+vl_summary %>%
+  dplyr::select(contains("setpt")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r setpt-models, warning=F,message=F}
+
+unadj_vl_summary %>%
+  rename(unadj_model_setpt = model_setpt) %>%
+  left_join(vl_summary, by = "pub_id") %>%
+  left_join(vl_data_summary, by = "pub_id") %>%
+  select(unadj_model_setpt, model_setpt, obs_setpt = setpt)%>%
+  ggpairs(progress = F)
+
+```
+
+
+```{r auc-comp}
+
+vl_summary %>%
+  dplyr::select(contains("auc")) %>%
+  ggpairs(progress = F)
+
+```
+
+```{r avg-models, warning=F,message=F}
+
+unadj_vl_summary %>%
+  rename(unadj_geo_auc_3mo = geo_auc_3mo) %>%
+  left_join(vl_summary, by = "pub_id") %>%
+  left_join(vl_data_summary, by = "pub_id") %>%
+  select(unadj_geo_auc_3mo, geo_auc_3mo, obs_avg = avg_vl)%>%
+  ggpairs(progress = F)
+
+```
+
+```{r r0-comp}
+
+vl_summary %>%
+  dplyr::select(contains("r0")) %>%
+  ggpairs(progress = F)
+
+```
+
+
+```{r r0-models, warning=F,message=F}
+
+unadj_vl_summary %>%
+  rename(unadj_upslope_r0 = upslope_r0, unadj_calc_r0 = unadjusted_r0) %>%
+  left_join(rename(vl_summary, calc_r0 = unadjusted_r0), by = "pub_id") %>%
+  dplyr::select(contains("r0")) %>%
+  ggpairs(progress = F)
+
+```
+
+# Save final model
+
+```{r, class.source = "fold-show"}
+
+write_csv(final_pop_parms, clean_data_here("final_model_popparms.csv"))
+
+final_vl_summary = full_join(vl_summary, vl_data_summary, by = "pub_id")
+
+# 4 ptids really just have first positive data
+stopifnot(nrow(final_vl_summary) == 162)
+stopifnot(all(!is.na(select(subset(final_vl_summary, !is.na(initT_mode)), -setpt))))
+stopifnot(nrow(subset(final_vl_summary, !is.na(initT_mode))) == 158)
+
+glimpse(final_vl_summary)
+write_csv(final_vl_summary, clean_data_here("final_vl_summary.csv"))
+
+```
+
+```{r save-shared, eval = save_shared_folder}
+
+write_csv(tibble(), 
+           paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!FINAL VL MODEL UPDATED - ",
+                  Sys.Date()))
+
+write_csv(select(final_vl_summary, -log10_auc_3mo, -study, -final_infusion_pre_fp_day, -final_infusion_pre_dx_day),  
+          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/final_model_vl_summary.csv")
+
+```
