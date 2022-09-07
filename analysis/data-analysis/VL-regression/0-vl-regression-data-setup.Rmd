@@ -61,12 +61,13 @@ vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>
 
 demo_dat = distinct(vl_data, pub_id, trt_ic80, ic80gte1, protocol_full, rx_lab, rx_pool)
 
-vl_mod_summary = read_csv(clean_data_here("unadjusted_model_vl_summary.csv"), col_types = cols()) %>%
+vl_mod_summary_all = read_csv(clean_data_here("final_vl_summary.csv"), col_types = cols()) %>%
   mutate(
     ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
     rx_lab = factor(rx_code2, levels = rx_labeller$rx_code2, labels = rx_labeller$trt_cat),
     rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)")
   )
+vl_mod_summary = subset(vl_mod_summary_all, !is.na(initT_mode))
 
 # this would signify a data change
 stopifnot(nrow(vl_data) == 880)
@@ -83,6 +84,13 @@ first_positive = vl_data %>%
   ) %>%
   arrange(trt_ic80_code)
 
+# check with calculated summaries in vl_summary
+stopifnot(!diffdf::diffdf_has_issues(diffdf::diffdf(
+  select(first_positive, pub_id, first_pos = log10vl),
+  select(vl_mod_summary_all, pub_id, first_pos),
+  key = "pub_id"
+)))
+
 avg_vl = vl_data %>% 
   dplyr::filter(days_fp >= 0) %>%
   group_by(across(c(pub_id, ic80gte1, protocol_full, contains("trt_"), contains("rx_"), study_region_code))) %>%
@@ -98,6 +106,14 @@ avg_vl = vl_data %>%
   mutate(isSA703 = study_region_code == 1,
     isNSA703 = study_region_code == 2,
     isSwiss704 = study_region_code == 3)
+
+# check with calculated summaries in vl_summary
+stopifnot(!diffdf::diffdf_has_issues(
+  diffdf::diffdf(
+    select(avg_vl, pub_id, avg_vl = log10vl), 
+    select(vl_mod_summary_all, pub_id, avg_vl), 
+    key = "pub_id")
+  ))
 
 avg_vl_model = first_positive %>%
   select(-log10vl) %>%
@@ -131,6 +147,14 @@ set_point = vl_data %>%
     isNSA703 = study_region_code == 2,
     isSwiss704 = study_region_code == 3)
 stopifnot(nrow(set_point) == 134)
+
+# check with calculated summaries in vl_summary
+stopifnot(!diffdf::diffdf_has_issues(
+  diffdf::diffdf(
+    select(set_point, pub_id, setpt = log10vl), 
+    select(subset(vl_mod_summary_all, n_setpt > 0), pub_id, setpt), 
+    key = "pub_id")
+  ))
 
 set_point_model = first_positive %>%
   select(-log10vl) %>%
