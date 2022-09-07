@@ -58,7 +58,7 @@ time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols
   select(pub_id, contains("_day"))
 
 demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
-  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2, fp_day) %>% 
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
   distinct() %>%
   left_join(rx_lab, by = "rx_code2")%>%
   left_join(time_data, by = "pub_id")
@@ -330,5 +330,51 @@ all_indiv_parms %>%
   geom_boxplot() +
   facet_wrap(~parameter, scales ="free_y") +
   ggtitle("sensitive viruses (ic80 < 1)")
+
+```
+
+## Rho Comparisons
+
+Based on the placebo model, sensitive viruses have higher initial VL. The PKPD model would have an opposing effect because sensitive viruses are neutralized when VRC01 is present. At the population average burst size (fairly resistant virus) the burst size would be under-estimated for sensitive viruses and the model find an optima with a high potency reduction (the PKPD effect doesnt seem to be doing much). 
+
+Without omega, the estimates are similar and lower. Why this is dependent on the omega specification is complex and seemingly related to the flexibility of model draws and complexity of parameter correlations. Across all participants, the variation is fairly hidden as most viruses are resistant. However, among participants with sensitive viruses (< 1), there is variability of the parameter draws and changes in the medians across models that is shown above. 
+
+
+```{r rho-setup}
+
+pkpd_models_rho_omega = tribble(
+  ~model_label, ~model_location,
+  "pkpd only", "PKPD/pkpd-model",
+  "indirect + pkpd", "PKPD/adj-pkpd-model",
+)
+
+pkpd_models_pkpd_only = tribble(
+  ~model_label, ~model_location,
+  "pkpd only (no rho omega)", "PKPD/pkpd-model-no-omega"
+)
+
+pkpd_models_final = tribble(
+  ~model_label, ~model_location,
+  "indirect + pkpd (no rho omega)", "PKPD/adj-pkpd-model-no-omega",
+)
+
+rho_indiv_parms = stack_indiv_parms(pkpd_models_rho_omega$model_location,
+                                pkpd_models_rho_omega$model_label)
+
+
+```
+
+```{r}
+
+vrc01_pop_ests_wide = pkpd_pop_ests %>%
+  select(model, parameter, value) %>%
+  spread(parameter, value)
+
+ggplot(rho_indiv_parms, aes(x = model, y = 10^lrho_mode)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_y_log10(breaks = c(500, 1000, 1500)) +
+  geom_point(data = vrc01_pop_ests_wide, aes(y = 10^lrho_pop),
+             shape = "x", size = 4, colour = "red")
 
 ```

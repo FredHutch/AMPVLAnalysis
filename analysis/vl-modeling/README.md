@@ -36,6 +36,8 @@ The model fitting procedure is as follows:
   - Generate the final AIC supplementary tables describing model building
   - Save vl summary with all key endpoints for statistical analysis
     - `final_vl_summary.csv`
+  - Save final pop pkpd parameters:
+    - `final_model_popparms.csv`
 - 06\) amp-sim-analysis
   - This generates key manuscripts figures
   - Population-level simulations to illustrate dose-response, direct/indirect effects

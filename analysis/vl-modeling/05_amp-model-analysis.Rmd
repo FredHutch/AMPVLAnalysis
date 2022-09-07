@@ -86,8 +86,8 @@ final_vrc01_loc = "PKPD/adj-pkpd-model-no-omega"
 time_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
   select(pub_id, contains("_day"))
 
-demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
-  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2) %>% 
+demo_merge_full = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) %>%
+  dplyr::select(pub_id, contains("gmt"), nisolates, protocol, study, rx_code2, vl_model_flag) %>% 
   distinct() %>%
   left_join(rx_lab, by = "rx_code2") %>%
   mutate(
@@ -99,6 +99,8 @@ demo_merge = read_csv(clean_data_here("adata-vl.csv"), col_types = cols()) %>%
     hill_mf = if_else(gmt80mf < 100, hill_mf, mean(hill_mf[gmt80mf < 100 & rx_code2 != "C"])),
   ) %>%
   left_join(time_data, by = "pub_id") 
+
+demo_merge = filter(demo_merge_full, vl_model_flag) %>% select(-vl_model_flag)
 
 stopifnot(nrow(demo_merge) == 158)
 
@@ -142,15 +144,16 @@ vrc01_dose = vrc01_pkpd_dat %>%
 vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) 
 
 vl_data_summary = vl_data %>%
-  group_by(pub_id) %>%
+  group_by(pub_id, vl_model_flag) %>%
   summarize(
     first_pos = log10vl[days_fp == 0],
     n_avg = sum(days_fp >= 0),
     avg_vl = mean(log10vl[days_fp >= 0]),
     peak_vl = max(log10vl),
     peak_day_fp = days_fp[which.max(log10vl)],
-    n_setpt = sum(days_fp > days_fp[which.max(log10vl)] & cens <= 0),
-    setpt = if_else(n_setpt == 0, NA_real_, mean(log10vl[days_fp > days_fp[which.max(log10vl)] & cens <= 0]))
+    n_setpt = sum(days_fp > days_fp[which.max(log10vl)]),
+    setpt = if_else(n_setpt == 0, NA_real_, mean(log10vl[days_fp > days_fp[which.max(log10vl)]])),
+    .groups = "drop"
   )
 stopifnot(nrow(vl_data_summary) == 162)
 
@@ -520,13 +523,26 @@ unadj_vl_summary %>%
 
 ```
 
-# Save final model
+# Save final 
+
+
+```{r}
+
+non_model_ptids = vl_data_summary %>%
+  filter(!vl_model_flag) %>%
+  select(-vl_model_flag) %>%
+  left_join(demo_merge_full, by = "pub_id")
+
+stopifnot(nrow(non_model_ptids) == 4)
+
+```
 
 ```{r, class.source = "fold-show"}
 
 write_csv(final_pop_parms, clean_data_here("final_model_popparms.csv"))
 
-final_vl_summary = full_join(vl_summary, vl_data_summary, by = "pub_id")
+final_vl_summary = left_join(vl_summary, vl_data_summary,  by = "pub_id") %>%
+  bind_rows(non_model_ptids)
 
 # 4 ptids really just have first positive data
 stopifnot(nrow(final_vl_summary) == 162)

@@ -35,16 +35,12 @@ source(here("models", "rxode-models", "rxode-pkpd-models.R"))
 theme_set(theme_bw() + theme(legend.position = "top"))
 strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
 
-adj_placebo_model_loc = "VL-adjusted-placebo/cns-pi"
-
-amp_theta_pd = tibble(IC80 = NA, rho = 550, h = 1.25)
-
 titer_neut = function(id50, h = 1) 1 - beta_titer_neut(id50, h)
 beta_titer_neut = function(id50, h = 1) 1/(1+id50^h)
 
 ```
 
-```{r pe-data}
+```{r amp-pe-data}
 
 pt80_efficacy = tibble(
   PT80 = c(32, 82, 194),
@@ -67,15 +63,14 @@ raw_placebo_data = read_csv(mlx_data_here("amp-mlx-vl-placebo.csv"), col_types =
 placebo_ic80_range = c(min(raw_placebo_data$gmt80ls), max(raw_placebo_data$gmt80ls))
 placebo_ic50_range = c(min(raw_placebo_data$gmt50ls), max(raw_placebo_data$gmt50ls))
 
-placebo_pop_ests = stack_model_ests(adj_placebo_model_loc)
-placebo_pop_wide = placebo_pop_ests %>%
+final_pop_ests = read_csv(clean_data_here("final_model_popparms.csv"), col_types = cols())
+final_pop_ests_wide = final_pop_ests %>%
   dplyr::select(parameter, value) %>% spread(parameter, value)
 
-theta_vl_placebo = prep_vl_model_parms(mlx_project = adj_placebo_model_loc) %>%
-  dplyr::select(-initT)
+theta_vl_placebo = prep_vl_model_parms(mode_parms = final_pop_ests_wide, parm_tag = "_pop")
 
 burst_effect = function(ic80, pop_parms = placebo_pop_wide) {
-  lp = placebo_pop_wide$lp_pop + placebo_pop_wide$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
+  lp = final_pop_ests_wide$lp_pop + final_pop_ests_wide$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
   10^(lp)
 }
 
@@ -88,37 +83,24 @@ raw_vrc01_data = read_csv(mlx_data_here("amp-mlx-vl-vrc01.csv"), col_types = col
 vrc01_ic80_range = c(min(raw_vrc01_data$gmt80ls), max(raw_vrc01_data$gmt80ls))
 vrc01_ic50_range = c(min(raw_vrc01_data$gmt50ls), max(raw_vrc01_data$gmt50ls))
 
-pkpd_models_rho_omega = tribble(
-  ~model_label, ~model_location,
-  "pkpd only", "PKPD/pkpd-model",
-  "indirect + pkpd", "PKPD/adj-pkpd-model",
-)
-
-pkpd_models_pkpd_only = tribble(
-  ~model_label, ~model_location,
-  "pkpd only (no rho omega)", "PKPD/pkpd-model-no-omega"
-)
-
-pkpd_models_final = tribble(
-  ~model_label, ~model_location,
-  "indirect + pkpd (no rho omega)", "PKPD/adj-pkpd-model-no-omega",
-)
-
-rho_indiv_parms = stack_indiv_parms(pkpd_models_rho_omega$model_location,
-                                pkpd_models_rho_omega$model_label)
-
-vrc01_pop_ests = stack_model_ests(
-  bind_rows(pkpd_models_pkpd_only, pkpd_models_final)$model_location,
-  bind_rows(pkpd_models_pkpd_only, pkpd_models_final)$model_label
-  )
-vrc01_pop_ests_wide = vrc01_pop_ests %>%
-  dplyr::select(model, parameter, value) %>% spread(parameter, value)
-
 vrc01_pkpd_data = read_csv(here('output/pk-modeling/sim-pk-withVLneut.csv'), col_types = cols())
 vrc01_first_pos = subset(vrc01_pkpd_data, first_positive) %>%
   mutate(PT80 = centr_conc/gmt80ls)
 
-theta_vl_vrc01 = prep_vl_model_parms(mlx_project = pkpd_models_final$model_location) 
+theta_vl_vrc01 = theta_vl_placebo
+
+```
+
+```{r pd-setup}
+
+vl_summary = read_csv(clean_data_here("final_vl_summary.csv"), col_types = cols())
+
+#1.28, use 1.25
+mean_hill = mean(vl_summary$hill_ls)
+
+amp_theta_pd = tibble(IC80 = NA, rho = 10^final_pop_ests_wide$lrho_pop, h = 1.25)
+
+kable(amp_theta_pd, caption = "AMP PD parameters") %>% kable_styling(full_width = F)
 
 ```
 
@@ -130,10 +112,12 @@ pk_parms = tribble(
   "V2", 4.749,
   "Q", 0.676
 )
+
+kable(pk_parms, caption = "AMP PK parameters") %>% kable_styling(full_width = F)
+
 theta_pk = create_theta(pk_parms)
 
-pk_sim_data = read_csv(here("output/pk-modeling/sim-pk-withVLneut.csv"), col_types = cols())
-conc_range = range(pk_sim_data$centr_conc, na.rm = T)
+conc_range = range(vrc01_pkpd_data$centr_conc, na.rm = T)
 
 ```
 
@@ -196,23 +180,6 @@ placebo_adj_vl_pl
 
 # VRC01 analysis
 
-## Rho distribution
-
-Based on the placebo model, sensitive viruses have higher initial VL. The PKPD model would have an opposing effect because sensitive viruses are neutralized when VRC01 is present. At the population average burst size (fairly resistant virus) the burst size would be under-estimated for sensitive viruses and the model find an optima with a high potency reduction (the PKPD effect doesnt seem to be doing much). 
-
- Without omega, the estimates are similar and lower. Why this is dependent on the omega specification is complex and seemingly related to the flexibility of model draws and complexity of parameter correlations. Across all participants, the variation is fairly hidden as most viruses are resistant. However, among participants with sensitive viruses (< 1), there is variability of the parameter draws and changes in the medians across models that is shown in the pkpd-model html. 
-
-```{r}
-
-ggplot(rho_indiv_parms, aes(x = model, y = 10^lrho_mode)) +
-  geom_boxplot() +
-  geom_point() +
-  scale_y_log10(breaks = c(500, 1000, 1500)) +
-  geom_point(data = vrc01_pop_ests_wide, aes(y = 10^lrho_pop),
-             shape = "x", size = 3)
-
-```
-
 ## Dose-response
 
 Seems very minimal in the range of the data
@@ -257,7 +224,7 @@ pkpd_dr_pl
 ```
 
 
-```{r}
+```{r, eval = F}
 
 pkpd_dr_pl_alt = dose_response %>%
   gather("type", "neutralization", in_vitro, in_vivo, pe) %>%

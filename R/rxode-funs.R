@@ -8,15 +8,15 @@ create_theta = function(parm_tibble){
     spread(parameter, value) 
 }
 
-prep_vl_model_parms = function(mlx_project, mode_parms = NULL){
+prep_vl_model_parms = function(mlx_project, mode_parms = NULL, parm_tag = "_mode"){
   if(is.null(mode_parms))  {
     out_parms = get_pop_ests(mlx_project) %>%
       dplyr::filter(str_detect(parameter, "_pop")) %>%
       create_theta()
   } else{
     out_parms = mode_parms %>%
-      select(contains("_mode")) %>%
-      rename_with(~ str_replace(., "_mode", ""))
+      select(contains(parm_tag)) %>%
+      rename_with(~ str_replace(., parm_tag, ""))
   }
   out_parms %>%
     mutate(Bt0 = 10^lBt0, p = 10 ^ lp)
