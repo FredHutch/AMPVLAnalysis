@@ -120,6 +120,7 @@ stopifnot(all(pkpd_types$var_name == names(raw_data)))
 
 ```{r adj-model-setup, eval = F}
 
+
 #these functions are run everytime
 
 setup_pkpd_model = function(inits, mlx_data = "amp-mlx-pkpd-holteT0.csv"){
@@ -187,6 +188,95 @@ getPopulationParameterInformation()
 initial_runs()
 
 save_project(pkpd_model_tag("adj-pkpd-model-no-omega"))
+
+setPopulationParameterInformation(lrho_pop = list(initialValue = 2.7982272104, method = "FIXED"))
+
+```
+
+```{r profile-adj}
+
+
+lrho_range = c(0, 1, log10(50), seq(2, 3, by = 0.2), 3.5, 3.8, 4, 4.5, 4.8, 5, 5.5)
+
+adj_models_loglik = map_df(lrho_range, function(r){
+  setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
+
+  setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+  setIndividualParameterVariability(lrho = F)
+
+  setPopulationParameterInformation(
+    beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
+                              method = "FIXED"),
+    lrho_pop = list(initialValue = r, method = "FIXED")
+  )
+
+  set_project_settings(initial_estimates = FALSE)
+  runScenario()
+  
+  ll = getEstimatedLogLikelihood() %>% flatten_df() %>% rename(loglik = OFV)
+  
+  out = bind_cols(tibble(lrho = r, ll))
+  print(out)
+  out
+})
+
+set.seed(134)
+adj_models_loglik_fine = map_df(c(2.7, 2.8, 2.9, 3, 3.1), function(r){
+  setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
+
+  setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+  setIndividualParameterVariability(lrho = F)
+
+  setPopulationParameterInformation(
+    beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
+                              method = "FIXED"),
+    lrho_pop = list(initialValue = r, method = "FIXED")
+  )
+
+  set_project_settings(initial_estimates = FALSE)
+  
+  sc = getScenario()
+  sc$tasks = c(populationParameterEstimation = T, conditionalModeEstimation = F, conditionalDistributionSampling = T,
+               standardErrorEstimation = F, logLikelihoodEstimation = T, plots = F)
+  setScenario(sc)
+  
+  ll = map_df(1:5, function(i){
+    runScenario()
+    getEstimatedLogLikelihood() %>% flatten_df() %>% rename(loglik = OFV)
+  }) %>% summarise(across(everything(), min))
+    
+  out = bind_cols(tibble(lrho = r, ll))
+  print(out)
+  out
+})
+
+
+x1 = ggplot(adj_models_loglik, aes(x = 10^lrho, y = loglik)) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10()
+x2 = ggplot(adj_models_loglik, aes(x = 10^lrho, y = loglik)) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10() +
+  coord_cartesian(ylim = c(min(all$loglik), 9500))
+
+adj_models_loglik2 = adj_models_loglik %>%
+  mutate(min_loglik = min(loglik))
+
+adj_models_loglik2 %>%
+  ggplot(aes(x = 10^lrho, y = pmin(abs(min_loglik-loglik), 20))) +
+  geom_point() +
+  geom_line(data = filter(adj_models_loglik2, lrho <= 2.2)) +
+  geom_smooth(data = filter(adj_models_loglik2, lrho >= 2.2), se = F,  method= "loess") +
+  scale_x_log10()
+
+cowplot::plot_grid(x1, x2, nrow = 1)
+
+
+
+write_csv(adj_models_loglik, "rho_profile.csv")
+
 
 ```
 
