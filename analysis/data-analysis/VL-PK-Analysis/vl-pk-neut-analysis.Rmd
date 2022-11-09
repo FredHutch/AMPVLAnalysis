@@ -5,112 +5,252 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-This is archived code at the moment. Dan is doing most of this analysis right now. This is unlikely to run without editing.
+This has some odds and ends analysis for PK, neut, and VL. Dan has developed the dose-response models for first positive.
 
-Some of the code relies on VL models that are obsolete/non-existent.
+The main question here is the relationship of first positive to time of infection and last infusion. This depends on having the infection time estimated from the VL model analysis.
 
-# PKPD primer work
+Basically, at time of infection, the titer is make or break on protection. The threshold identified for protection here is a PT80 in the 300 range. However, for VL modulation, we find the titer must be higher. The paradox is, if higher titers prevention infection vs. modulation, how do we have post-acquisition titers high enough to modulate VL. The AMP study does have post-exposure infusions though that could explain.
 
-## Infection time titer and concentration
+From the data, one approach is assess titers at infection vs. titers near first positive. If post-exposure infusion explains modulation, we would expect maybe higher titers near first positive. This is challenging though because there is lag effect: high titers suppress VL prior to first positive and the first positive may be lower because of higher titers prior to the measurement vs. simultaneously with measurement. Titers are subject to PK, with non-linear effects on VL that are unobserved compounded by sparse sampling.
 
-```{r conc-setup}
-#need simulated PK data with neut merged on
-concentration_data = sim_pk_dat_neut %>%
-  dplyr::filter(days_enrollment <= tpf_day & days_enrollment > 7) %>%
-  gather(key = "compartment", value = "concentration", centr_conc, peri_conc) %>%
-  group_by(pub_id, compartment, vars(contains("gmt"))) %>%
-  summarize(
-    trough = min(concentration),
-    infection_time = concentration[days_enrollment == tpf_day],
-    mean = mean(concentration),
-    peak = max(concentration),
-    `.groups` = "drop"
-  ) 
+ - Tally cases of infusions between infection time and first positive
+ - Duration duration from previous infusion to first positive, vs. first positive.
 
-trt_titer = concentration_data %>%
-  gather("time", "concentration", trough, infection_time, mean, peak, factor_key = T) %>%
-  left_join(raw_neut, by = "pub_id") %>%
-  gather("name", "IC", gmt50ms, gmt50ls, gmt50mf, gmt80ms, gmt80ls, gmt80mf) %>%
-  mutate(
-    cat = if_else(str_detect(name, "50"), "ID50", "ID80"),
-    cat2 = if_else(str_detect(name, "50"), "IC50", "IC80"),
-    titer = pmax(0.01, pred_conc)/IC) 
+A model-based approach: Re-simulate PKPD-V in VRC01 participants stopping VRC01 at infection time. Then predict VL at the first positive measurement time to compare with the observed first positive.
+
+```{r}
+library(tidyverse)
+library(here)
+library(glue)
+library(kableExtra)
+library(cowplot)
+library(janitor)
+library(cowplot)
+library(GGally)
+library(knitr)
+source(here("R", "directory-funs.R"))
+source(here("R", "rxode-funs.R"))
+source(here("R", "mlx-res-processing.R"))
+source(here("models", "rxode-models", "rxode-pkpd-models.R"))
+theme_set(theme_bw())
+
+
+vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols()) 
+
+vrc01_dose = read_csv(mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"), col_types = cols()) %>%
+  filter(ADM == 1) %>%
+  distinct(pub_id, TIME, AMT, RATE) %>%
+  mutate(AMT = as.numeric(AMT), RATE = as.numeric(RATE)) %>%
+  arrange(pub_id, TIME) %>%
+  group_by(pub_id) %>%
+  mutate(DOSENO = row_number()) %>%
+  ungroup()
+
+vl_mod_summary_all = read_csv(clean_data_here("final_vl_summary.csv"), col_types = cols()) 
+
+vl_mod_vrc01 = vl_mod_summary_all %>% filter(rx_code2 != "C")
+vl_mod_placebo = vl_mod_summary_all %>% filter(rx_code2 == "C")
+
+vl_mod_vrc01_pred_raw =  get_indiv_preds("PKPD/adj-pkpd-model-no-omega") %>%
+  rename(pub_id = ID)
+
+vl_mod_vrc01_preds = vl_mod_vrc01_pred_raw %>%
+  left_join(select(vl_mod_vrc01, pub_id, fp_day), by = "pub_id") %>%
+  filter(time == fp_day) %>%
+  mutate(first_pos_ipred = log10(indivPredMode)) %>%
+  select(pub_id, first_pos_ipred)
+
+pk_sim_pre_fp = read_csv(here("output/pk-modeling/sim-pk-withVLneut.csv"), col_types = cols()) %>%
+  filter(days_enrollment <= fp_day) %>%
+  left_join(select(vl_mod_vrc01, pub_id, model_infection_day), by = "pub_id") %>%
+  mutate(pt80 = centr_conc/gmt80ls, sens = gmt80ls <= 1)
+
+# 2 vrc01 ptids only have first positive, werent in model
+stopifnot(nrow(subset(pk_sim_pre_fp, round(model_infection_day) == days_enrollment)) == 96)
+
 ```
 
+## Counter-factual FP modeling
 
+Turning off VRC01 altogether explains some of the reduction in VL but not all of it.
 
-```{r pred-vs-obs}
-
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(times <= infection_day) %>%
-  group_by(pub_id) %>%
-  summarize(
-    max_pred = max(pred_conc, na.rm = T),
-    max_obs = max(obs_conc, na.rm = T)
-  ) %>%
-  ggplot(aes(x = max_pred, y = max_obs)) +
+```{r}
+vl_mod_vrc01_pred_raw %>%
+  ggplot(aes(x = log10(indivPredMode), y = log10(DV))) +
   geom_point() +
-  labs(x = "Max prediction [VRC01]", y = "Max observed [VRC01]") +
   geom_abline()
 
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(times <= infection_day) %>%
-  group_by(pub_id) %>%
-  summarize(
-    min_pred = min(pred_conc, na.rm = T),
-    min_obs = min(obs_conc, na.rm = T)
-  ) %>%
-  ggplot(aes(x = min_pred, y = min_obs)) +
+
+```
+
+```{r}
+
+vl_sims_infection_stop = map_df(1:nrow(filter(vl_mod_vrc01, vl_model_flag)), function(i){
+  parm_set = vl_mod_vrc01[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  infection_day = parm_set$model_infection_day
+  fp_day = parm_set$fp_day
+  
+  ptid_days = filter(vl_data, pub_id == parm_set$pub_id &
+                       days_enrollment >= infection_day & days_enrollment <= fp_day) %>%
+    pull(days_enrollment)
+  
+  stopifnot(fp_day %in% ptid_days)
+
+  # no dosing after transmission
+  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
+  dosing_stop = filter(dosing, TIME < infection_day)
+  dosing_none = NULL
+  if(nrow(dosing) == 0) dosing = NULL
+  if(nrow(dosing_stop) == 0) dosing_stop = NULL
+  
+  # this first mtime for future work, but needed to git the old method
+  #mtime = c(0, ptid_days)
+  mtime = c(0, fp_day)
+  
+  theta_pk = select(parm_set, Cl, V1, Q, V2)
+  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
+                    rho = 10^parm_set$lrho_mode, 
+                    h = parm_set$hill_ls)
+  run_mod = function(dose_in){
+      run_pkpd_models(mtime,      
+                  holte_pkpd_model,
+                  theta_pk = theta_pk,
+                  theta_vl = prep_vl_model_parms(mode_parms = parm_set),
+                  theta_pd = theta_pd,
+                  infection_time = infection_day,
+                  infusion_pk_dosing = dose_in) %>% filter(time > 0)
+  }
+  parm_set %>%
+  mutate(
+    first_pos_mod = run_mod(dosing)$log10V,
+    first_pos_counter = run_mod(dosing_stop)$log10V,
+    first_pos_novrc01 = run_mod(dosing_none)$log10V,
+    model = "first_pos")
+}) %>%
+  left_join(vl_mod_vrc01_preds, by = "pub_id")
+
+# confirmed that ipred = pos_mod
+
+```
+
+```{r}
+
+vl_sims_infection_stop %>%
+  select(first_pos, first_pos_mod, first_pos_counter, first_pos_novrc01) %>%
+  ggpairs()
+
+```
+
+```{r}
+
+vl_sims_infection_stop %>%
+  mutate(sens = gmt80ls < 1) %>%
+  gather(source, first_pos, first_pos_mod, first_pos_novrc01) %>%
+  ggplot(aes(x = source, y = first_pos)) +
+  geom_boxplot() +
   geom_point() +
-  labs(x = "Min prediction [VRC01]", y = "Min observed [VRC01]") +
+  geom_path(aes(group = pub_id), alpha = 0.5) +
+  geom_text(data = mutate(subset(vl_sims_infection_stop, pub_id %in% c("704-0592", "704-0893")),
+                          sens = gmt80ls < 1),
+            x = 1, aes(y =first_pos_mod, label = pub_id)) +
+  facet_wrap(~sens, labeller = 
+               as_labeller(c(`FALSE` = "IC80 > 1",
+                             `TRUE` = "IC80 < 1"))
+  )
+
+```
+
+## Looking at data
+
+Is this a dead-end.
+
+# Look at the data among sensitive viruses.
+
+```{r}
+pk_sim_pre_fp %>%
+  filter(gmt80ls <= 1 & (days_enrollment - fp_day) < 60) %>%
+  ggplot(aes(x = (days_enrollment - fp_day)/7, y = pmax(1, pt80))) +
+  geom_line() +
+  scale_y_log10() +
+  geom_vline(aes(xintercept = (model_infection_day - fp_day)/7)) +
+  geom_vline(aes(xintercept = (tpf_day - fp_day)/7), colour = "red") +
+  facet_wrap(~pub_id) 
+
+
+```
+
+```{r}
+
+titer_summary = pk_sim_pre_fp %>%
+  filter(!is.na(model_infection_day)) %>%
+  group_by(pub_id) %>%
+  mutate(
+    fp_vl = log10vl[first_positive],
+    fp_pt80 = pt80[days_enrollment == fp_day],
+    infection_pt80_pf = pt80[days_enrollment == tpf_day],
+    infection_pt80_mod = pt80[days_enrollment == model_infection_day] 
+    ) %>%
+  distinct(pub_id, fp_vl, fp_pt80, infection_pt80_pf, infection_pt80_mod, gmt80ls, sens) 
+
+
+titer_summary %>%
+  ggplot(aes(x = pmax(1, fp_pt80), y = pmax(1,infection_pt80_mod))) +
+  geom_point() +
+  scale_y_log10() +
+  scale_x_log10() +
   geom_abline() 
 
-```
 
-```{r pred-concentration}
-
-concentration_data %>%
-  gather("time", "pred_conc", trough, infection_time, mean, peak, factor_key = T) %>%
-  ggplot(aes(x = time, y = pmax(pred_conc, 0.01), colour = time)) +
-  geom_boxplot() +
-  geom_line(aes(group = interaction(pub_id)), alpha = 0.25, colour = "gray") +
+titer_summary %>%
+  ggplot(aes(x = pmax(1, fp_pt80), y = pmax(1,infection_pt80_pf))) +
+  geom_point() +
   scale_y_log10() +
-  geom_point() +
-  labs(y = "Predicted concentrations up to infection", x = "") 
-
-```
-
-```{r conc-ic50}
-
-trt_titer %>%
-  dplyr::filter(time == "infection_time") %>%
-  ggplot(aes(x = pmax(pred_conc, 0.01), y = pmax(IC, 0.01))) +
-  geom_point() +
   scale_x_log10() +
-  scale_y_log10() +
-  geom_abline(intercept = c(-1), linetype = 2) +
-  geom_abline(intercept = c(-2), linetype = 2, colour = "red") +
-  labs(y = "ICxx", x = "Pred. [VRC01] at infection") +
-  annotate("text", x = 12, y = 12 / 100, label = "titer = 100", angle = 45, vjust = 1, colour = "red") +
-  annotate("text", x = 1.2, y = 1.2 / 10, label = "titer = 10", angle = 45, vjust = 1) +
-  annotate("text", x = 0.1, y = 0.1, label = "titer = 1", angle = 45, vjust = 1) +
-  facet_wrap(~ name + cat2, nrow = 2, scales="free_x") 
+  geom_abline() +
+  facet_wrap(~sens)
 
 ```
 
 
-```{r pred-titers, width = 9}
+```{r}
 
-trt_titer %>%
-  ggplot(aes(x = time, y = log10(titer), colour = time)) +
-  geom_boxplot() +
-  geom_line(aes(group = interaction(pub_id, cat, name)), alpha = 0.25, colour = "gray") +
+titer_summary %>%
+  mutate(lower_infection_titer = infection_pt80_pf < fp_pt80)
+  ggplot(aes(x = pmax(1, fp_pt80), y = pmax(1,infection_pt80_pf))) +
   geom_point() +
-  labs(y = "Predicted log10 titer up to infection", x = "") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
-  theme(axis.text.x = element_text(size = 8))
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_abline()
 
 ```
+
+```{r}
+
+ggplot(vl_mod_vrc01, aes(x = (fp_day - final_infusion_pre_fp_day)/7, y = first_pos)) +
+  geom_point() +
+  labs(y = "first pos VL", x = "Weeks btw first positive and previous infusion")
+
+
+ggplot(vl_mod_vrc01, aes(x = (tpf_day - final_infusion_pre_fp_day)/7, y = first_pos)) +
+  geom_point() +
+  labs(y = "first pos VL", x = "Weeks btw pred. acquisition (PF) and final infusion (pre-fp)")
+
+
+ggplot(vl_mod_vrc01, aes(x = (model_infection_day - final_infusion_pre_fp_day)/7, y = first_pos)) +
+  geom_point() +
+  labs(y = "first pos VL", x = "Weeks btw pred. acquisition (PKPD-V) and final infusion (pre-fp, negative VL)")
+
+```
+
+```{r}
+
+
+
+```
+
+<!-------
+THE BELOW COULD BE USEFUL TO SET PLACEBO BOUNDARIES
 
 ## Predicted placebo titers 
 
@@ -257,178 +397,5 @@ trt_titer %>%
 
 ```
 
-## Concentration vs. viral load
-
-```{r vl-pk-ic50, fig.width=10, fig.height=10, warning =F}
-
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(infected & times > infection_day) %>%
-  left_join(raw_neut, by = "pub_id") %>%
-  gather("name", "value", gmt50mscat, gmt50lscat, gmt50mfcat) %>%
-  mutate(value = factor(value, levels = neut_cat_order)) %>%
-  ggplot(aes(x = log10(pmax(0.01, pred_conc)), y = log10(vl_num))) +
-  geom_point() +
-  geom_smooth(formula = 'y ~ x', method = "lm") +
-  labs(x = "Predicted log10 concentration (post-infection)", y = "Log10 VL (post-infection)") +
-  ggtitle("VRC01 vs VL by IC50 cats") +
-  facet_grid(name ~ value)
-
-```
-
-```{r vl-pk-ic80,fig.width=10, fig.height=10, warning =F}
-
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(infected & times > infection_day) %>%
-  left_join(raw_neut, by = "pub_id") %>%
-  gather("name", "value", gmt80mscat, gmt80lscat, gmt80mfcat) %>%
-  mutate(value = factor(value, levels = neut_cat_order)) %>%
-  ggplot(aes(x = log10(pmax(0.01, pred_conc)), y = log10(vl_num))) +
-  labs(x = "Predicted log10 concentration", y = "Log10 VL (post-infection)") +
-  geom_point() +
-  geom_smooth(formula = 'y ~ x', method = "lm") +
-  ggtitle("VRC01 vs VL by IC80 cats") +
-  facet_grid(name ~ value)
-
-```
-
-## Titer vs. viral load
-
-```{r vl-titer-ic50, fig.width=10, fig.height=10, warning =F}
-
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(infected & times > infection_day) %>%
-  left_join(raw_neut, by = "pub_id") %>%
-  gather("name", "value", gmt50ms, gmt50ls, gmt50mf) %>%
-  mutate(titer = pmax(0.01, pred_conc)/value) %>%
-  ggplot(aes(x = log10(titer), y = log10(vl_num))) +
-  geom_point() +
-  geom_smooth(formula = 'y ~ x', method = "loess") +
-  labs(x = "Predicted log10 ID50 titer", y = "Log10 VL (post-infection)") +
-  ggtitle("ID50 titer vs VL") +
-  facet_grid(name ~ .)
-
-```
-
-```{r vl-titer-ic80, fig.width=10, fig.height=10, warning =F}
-
-read_csv(mlx_data_here("predicted_infection_concentration.csv"), col_types = cols()) %>%
-  dplyr::filter(infected & times > infection_day) %>%
-  left_join(raw_neut, by = "pub_id") %>%
-  gather("name", "value", gmt80ms, gmt80ls, gmt80mf) %>%
-  mutate(titer = pmax(0.01, pred_conc)/value) %>%
-  ggplot(aes(x = log10(titer), y = log10(vl_num))) +
-  geom_point() +
-  geom_smooth(formula = 'y ~ x', method = "loess") +
-  labs(x = "Predicted log10 ID80 titer", y = "Log10 VL (post-infection)") +
-  ggtitle("ID80 titer vs VL") +
-  facet_grid(name ~ .)
-
-```
-
 ##  Titer vs. viral load parms
-
-```{r, include = F}
-
-
-titer_tcl_pmx = pmx_mlx(
-  config = "standing",
-  directory = mlx_model_here("viralload/placebo-models/trt-tcl-parms"),
-  input = mlx_data_here("amp-dosevl-trt-CAT.csv"),
-  id = "pub_id",
-  dv = "DV",
-  cats = neut_cats,
-  conts = neut_covs,
-  settings = pmx_settings(is.draft = FALSE)
-)
-
-```
-
-```{r, fig.width=10, fig.height=10, warning =F}
-pmx_plot_eta_conts(titer_tcl_pmx, scale_x_log10 = T,  
-                   smooth = list(formula = "y ~ x"),
-                   correl = list(size = 3, colour = "red"), labels = list(title = "Trt TCL"))
-```
-
-```{r, fig.width=10, fig.height=10, warning =F}
-
-pmx_plot_eta_cats(titer_tcl_pmx, labels = list(title = "Trt TCL")) + 
-   scale_x_discrete(limits = neut_cat_order) +
-  theme(axis.text.x = element_text(angle = 90))
-
-```
-
-
-
-```{r visc-pk-method, eval = F}
-library(VISCPK)
-test_pub_id = "704-0662"
-
-calc_conc = map_df("704-0662", function(pid){
-  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
-  #browser()
-  times = c(subset(indiv_preds, pub_id == pid)$time, vl_time_grid, vl_times$tpf_day)
-  ipred = c(subset(indiv_preds, pub_id == pid)$indivPredMode, rep(NA_real_, length(vl_time_grid)+1))
-  obs = c(subset(indiv_preds, pub_id == pid)$DV, rep(NA_real_, length(vl_time_grid)+1))
-  infusion_times = subset(test_dose, pub_id == pid)$TIME
-  infusion_doses = subset(test_dose, pub_id == pid)$AMT
-  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
-   
-  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
-    
-  tibble(
-    pub_id = pid,
-    times = times,
-    infection_day = vl_times$tpf_day,
-    infected = if_else(times %in% vl_time_grid, T, F),
-    obs_conc = obs,
-    ipred = ipred,
-    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
-                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
-  )
-                    
-  
-  })
-
-
-calc_conc2 = map_df("704-0662", function(pid){
-  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
-  #browser()
-  times = c(subset(indiv_fits, pub_id == pid)$time, vl_time_grid)
-  infusion_times = subset(test_dose, pub_id == pid)$TIME
-  infusion_doses = subset(test_dose, pub_id == pid)$AMT
-  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
-   
-  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
-    
-  tibble(
-    pub_id = pid,
-    times = times,
-    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
-                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
-  )
-                    
-  
-  })
-
-calc_conc3 = map_df("704-0662", function(pid){
-  vl_time_grid = subset(vl_data_analysis, pub_id == pid)$days_enrollment
-  #browser()
-  times = seq(0, max(vl_time_grid), by = 1)
-  infusion_times = subset(test_dose, pub_id == pid)$TIME
-  infusion_doses = subset(test_dose, pub_id == pid)$AMT
-  tinf = with(subset(test_dose, pub_id == pid), convert_nmRATE(nmRATE = RATE, AMT = AMT))
-   
-  rate_parms = convert_2cmp_pkparms(CL = test_set$Cl, Vc = test_set$V1, Q = test_set$Q, Vp = test_set$V2)
-    
-  tibble(
-    pub_id = pid,
-    times = times,
-    pred_conc = infusion_2comp(mtime = times, parms = rate_parms, 
-                               dose = infusion_doses, Tinf = tinf, infusion_times = infusion_times)
-  )
-                    
-  
-  })
-
-```
-
+---->
