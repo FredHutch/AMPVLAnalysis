@@ -1,9 +1,22 @@
 ---
-title: "PK, Neutralization, and VL - Descriptive analysis"
+title: "PK, Neutralization, and first positive VLs - Model result analysis"
 author: "Bryan Mayer"
 date: "`r Sys.Date()`"
-output: html_document
+output: 
+  html_document:
+    keep_md: true
+    code_folding: hide
 ---
+
+## Summary
+
+- There is little evidence for cases where infection happened before an infusion happened. This is different than an infusion after a first positive, which happens frequently. The former could latently alter first positives without affecting infection risk (i.e., titer at infection < titer at first positive).
+
+- In counter-factual simulations where VRC01 was turned off. We see an increase in VLs measured at the matched observation time for sensitive viruses.
+   - The increase did not reach first positive levels for the resistant group: the PKPD suppression does not sufficiently explain the full difference in VL measurements.
+   - There were no cases of potentially detecting an earlier first positive with VRC01 off. There were only two people with observation times (one each) between infection and first positive where predicted VL was >0 but below detection.
+  
+## Setup
 
 This has some odds and ends analysis for PK, neut, and VL. Dan has developed the dose-response models for first positive.
 
@@ -18,7 +31,7 @@ From the data, one approach is assess titers at infection vs. titers near first 
 
 A model-based approach: Re-simulate PKPD-V in VRC01 participants stopping VRC01 at infection time. Then predict VL at the first positive measurement time to compare with the observed first positive.
 
-```{r}
+```{r, message=F, warning = F}
 library(tidyverse)
 library(here)
 library(glue)
@@ -104,10 +117,8 @@ vl_sims_infection_stop = map_df(1:nrow(filter(vl_mod_vrc01, vl_model_flag)), fun
   if(nrow(dosing) == 0) dosing = NULL
   if(nrow(dosing_stop) == 0) dosing_stop = NULL
   
-  # this first mtime for future work, but needed to git the old method
-  #mtime = c(0, ptid_days)
-  mtime = c(0, fp_day)
-  
+  mtime = c(0, ptid_days)
+
   theta_pk = select(parm_set, Cl, V1, Q, V2)
   theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
                     rho = 10^parm_set$lrho_mode, 
@@ -121,12 +132,13 @@ vl_sims_infection_stop = map_df(1:nrow(filter(vl_mod_vrc01, vl_model_flag)), fun
                   infection_time = infection_day,
                   infusion_pk_dosing = dose_in) %>% filter(time > 0)
   }
-  parm_set %>%
-  mutate(
-    first_pos_mod = run_mod(dosing)$log10V,
-    first_pos_counter = run_mod(dosing_stop)$log10V,
-    first_pos_novrc01 = run_mod(dosing_none)$log10V,
-    model = "first_pos")
+
+  map2_df(list(dosing, dosing_stop, dosing_none),
+          c("VRC01", "stop_dose_infection", "no_VRC01"),
+          ~mutate(run_mod(..1), sim_type = ..2)) %>%
+    bind_cols(parm_set) %>%
+    mutate(first_positive_row = time == fp_day) %>%
+    select(pub_id, days = time, everything())
 }) %>%
   left_join(vl_mod_vrc01_preds, by = "pub_id")
 
@@ -134,10 +146,20 @@ vl_sims_infection_stop = map_df(1:nrow(filter(vl_mod_vrc01, vl_model_flag)), fun
 
 ```
 
+
+Without VRC01, were there any increases in VL that would've been caught earlier?
+No (2 observation times, all below log10 LLoQ of 1.3).
+
+```{r}
+subset(vl_sims_infection_stop, !first_positive_row) %>% select(sim_type, log10V)
+```
+
 ```{r}
 
 vl_sims_infection_stop %>%
-  select(first_pos, first_pos_mod, first_pos_counter, first_pos_novrc01) %>%
+  dplyr::filter(first_positive_row) %>%
+  pivot_wider(id_cols = pub_id, names_from = sim_type, values_from = log10V) %>%
+  select(-pub_id) %>%
   ggpairs()
 
 ```
@@ -145,27 +167,27 @@ vl_sims_infection_stop %>%
 ```{r}
 
 vl_sims_infection_stop %>%
+  filter(first_positive_row & sim_type != "stop_dose_infection") %>%
   mutate(sens = gmt80ls < 1) %>%
-  gather(source, first_pos, first_pos_mod, first_pos_novrc01) %>%
-  ggplot(aes(x = source, y = first_pos)) +
+  ggplot(aes(x = sim_type, y = log10V)) +
   geom_boxplot() +
   geom_point() +
   geom_path(aes(group = pub_id), alpha = 0.5) +
-  geom_text(data = mutate(subset(vl_sims_infection_stop, pub_id %in% c("704-0592", "704-0893")),
-                          sens = gmt80ls < 1),
-            x = 1, aes(y =first_pos_mod, label = pub_id)) +
+  scale_x_discrete(limits = c("VRC01", "no_VRC01")) +
+  # geom_text(data = mutate(subset(vl_sims_infection_stop, pub_id %in% c("704-0592", "704-0893")),
+  #                         sens = gmt80ls < 1),
+  #           x = 1, aes(y =first_pos_mod, label = pub_id)) +
   facet_wrap(~sens, labeller = 
                as_labeller(c(`FALSE` = "IC80 > 1",
                              `TRUE` = "IC80 < 1"))
-  )
+  ) +
+  labs(x = "", y = "first pos VL")
 
 ```
 
-## Looking at data
+## Looking at PK data
 
-Is this a dead-end.
-
-# Look at the data among sensitive viruses.
+Looking at the data among sensitive viruses, only a few questionable cases where VRC01 infusion happened after infection but before first positive. 
 
 ```{r}
 pk_sim_pre_fp %>%
@@ -179,6 +201,8 @@ pk_sim_pre_fp %>%
 
 
 ```
+
+Titers are all within an order of magnitude even in cases where titer might be higher at first positive time.
 
 ```{r}
 
@@ -199,8 +223,9 @@ titer_summary %>%
   geom_point() +
   scale_y_log10() +
   scale_x_log10() +
-  geom_abline() 
-
+  geom_abline() +
+  facet_wrap(~sens) +
+  labs(y = "pt80 at nlme infection time")
 
 titer_summary %>%
   ggplot(aes(x = pmax(1, fp_pt80), y = pmax(1,infection_pt80_pf))) +
@@ -208,22 +233,12 @@ titer_summary %>%
   scale_y_log10() +
   scale_x_log10() +
   geom_abline() +
-  facet_wrap(~sens)
+  facet_wrap(~sens) +
+  labs(y = "pt80 at paul infection time")
 
 ```
 
-
-```{r}
-
-titer_summary %>%
-  mutate(lower_infection_titer = infection_pt80_pf < fp_pt80)
-  ggplot(aes(x = pmax(1, fp_pt80), y = pmax(1,infection_pt80_pf))) +
-  geom_point() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_abline()
-
-```
+Timing is close on either end. This is interesting from a prevention perspective, but has little impact on the ODE predictions in a deterministic setting.
 
 ```{r}
 
@@ -236,166 +251,8 @@ ggplot(vl_mod_vrc01, aes(x = (tpf_day - final_infusion_pre_fp_day)/7, y = first_
   geom_point() +
   labs(y = "first pos VL", x = "Weeks btw pred. acquisition (PF) and final infusion (pre-fp)")
 
-
 ggplot(vl_mod_vrc01, aes(x = (model_infection_day - final_infusion_pre_fp_day)/7, y = first_pos)) +
   geom_point() +
   labs(y = "first pos VL", x = "Weeks btw pred. acquisition (PKPD-V) and final infusion (pre-fp, negative VL)")
 
 ```
-
-```{r}
-
-
-
-```
-
-<!-------
-THE BELOW COULD BE USEFUL TO SET PLACEBO BOUNDARIES
-
-## Predicted placebo titers 
-
-Concentration data distributions come from the treatment population (see above). We consider two pre-infection concentration distributions below: predicted concentrations at time of infection and mean concentrations across participants.
-
-To determine "placebo" titers, we use a "bootstrap" procedure. For each placebo ptid, we use their individual IC50 and IC80s to determine two measures of titer. The first is the distribution of titers calculated over the distribution of predicted concentrations at time of infection in the treatment population (Infection titer). The second is the distribution of titers calculated over the distribution of mean concentrations (prior to infection) in the treatment population (Mean titer). For each participant, these distributions are summarized by their range and their median.
-
-This procedure is repeated on the treatment population (Bootstrap treatment). Specifically, we de-couple the PK data from the given participant as an assessment of the method, and then compare that to the actual titer calculations with the paired PK data (Actual treatment).
-
-
-```{r placebo-setup}
-
-neut_data = raw_neut %>% mutate(trt = pub_id %in% concentration_data$pub_id)
-#placebo_neuts = dplyr::filter(neut_data, !trt)
-
-bootstrap_titer = 
-  map_df(unique(trt_titer$time), function(i){
-    map_df(unique(neut_data$pub_id), function(j){
-
-      neut_data %>%
-        dplyr::select(-contains("cat")) %>%
-        dplyr::filter(pub_id == j) %>% 
-        gather("name", "value", gmt50ms, gmt50ls, gmt50mf, gmt80ms, gmt80ls, gmt80mf) %>%
-        mutate(
-          time = i,
-          cat = if_else(str_detect(name, "50"), "ID50", "ID80"),
-          min_titer = min(concentration_data[[i]]) / value,
-          mean_titer = mean(concentration_data[[i]]) / value,
-          median_titer = median(concentration_data[[i]]) / value,
-          max_titer = max(concentration_data[[i]]) / value
-        )
-    })
-})
-
-```
-
-
-### Range of bootstrap titer calculations in placebo
-
-These plots are complicated.
-
-```{r}
-
-bootstrap_titer %>%
-  dplyr::filter(!trt & time == "infection_time") %>%
-  ggplot(aes(x = pub_id, y = median_titer, ymin = median_titer, ymax = max_titer)) +
-  geom_pointrange() +
-  coord_flip() +
-  scale_y_log10("'bootstrap' median infection titer through max titer") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
-  labs(x = "Placebo participants") +
-  theme(axis.text.y = element_blank())
-
-
-```
-
-```{r}
-
-bootstrap_titer %>%
-  dplyr::filter(!trt & time == "mean") %>%
-  ggplot(aes(x = pub_id, y = median_titer, ymin = median_titer, ymax = max_titer)) +
-  geom_pointrange() +
-  coord_flip() +
-  scale_y_log10("'bootstrap' median mean titer through max titer") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x") +
-  labs(x = "Placebo participants") +
-  theme(axis.text.y = element_blank())
-
-
-```
-
-
-
-### Predicted placebo titers vs. treatment
-
-
-```{r placebo-trt-inf-titer}
-
-trt_titer %>%
-  rename(median_titer = titer) %>%
-  mutate(trt = 2) %>%
-  bind_rows(bootstrap_titer) %>%
-  dplyr::filter(time == "infection_time") %>%
-  mutate(
-    grp = factor(trt, levels = 0:2,
-                 labels = c("Bootstrap\nplacebo",
-                            "Bootstrap\ntreatment",
-                            "Actual\ntreatment")
-    )
-  ) %>%
-  ggplot(aes(x = grp, y = median_titer)) +
-  geom_boxplot() +
-  geom_point(position = position_dodge(width = 0.5)) +
-  geom_line(aes(group = interaction(pub_id, name, cat)), alpha = 0.25) +
-  scale_y_log10("Infection titer (bootstrap median)") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
-
-
-```
-
-```{r placebo-trt-inf-titer-dens, eval = F}
-
-trt_titer %>%
-  rename(median_titer = titer) %>%
-  mutate(trt = 2) %>%
-  bind_rows(bootstrap_titer) %>%
-  dplyr::filter(time == "infection_time") %>%
-  mutate(
-    grp = factor(trt, levels = 0:2,
-                 labels = c("Bootstrap\nplacebo",
-                            "Bootstrap\ntreatment",
-                            "Actual\ntreatment")
-    )
-  ) %>%
-  ggplot(aes(x = median_titer, colour = grp)) +
-  geom_density(bw = 0.5) +
-  scale_x_log10("Infection titer (bootstrap median)") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
-
-
-```
-
-```{r placebo-trt-mean-titer}
-
-trt_titer %>%
-  rename(median_titer = titer) %>%
-  mutate(trt = 2) %>%
-  bind_rows(bootstrap_titer) %>%
-  dplyr::filter(time == "mean") %>%
-  mutate(
-    grp = factor(trt, levels = 0:2,
-                 labels = c("Bootstrap\nplacebo",
-                            "Bootstrap\ntreatment",
-                            "Actual\ntreatment")
-    )
-  ) %>%
-  ggplot(aes(x = grp, y = median_titer)) +
-  geom_boxplot() +
-  geom_point(position = position_dodge(width = 0.5)) +
-  geom_line(aes(group = interaction(pub_id, name, cat)), alpha = 0.25) +
-  scale_y_log10("Mean titer (bootstrap median)") +
-  facet_wrap(~ cat + name, nrow = 2, scales="free_x")
-
-
-```
-
-##  Titer vs. viral load parms
----->
