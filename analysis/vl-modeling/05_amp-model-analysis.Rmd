@@ -23,7 +23,7 @@ This curates the final results from the model building:
 
 Using the final models, simulate the VL. save the key parameters, R0, calculate key model sim results (AUC, set point, upslope). Merge on the observed vl summary.
 
-The following summaries are calculated from model simulations, and claculated by `summarize_sim_holte_vl()` from `summarize_sim_holte_vl.R`
+The following summaries are calculated from model simulations, and calculated by `summarize_sim_holte_vl()` from `summarize_sim_holte_vl.R`
 
 - peak: maximum log10vl
 - peak day
@@ -284,7 +284,8 @@ all_pop_est %>%
   filter(paper_model & keep & !parameter %in% c("LogLik","OFV", "BIC", "BICc", "AIC", "V0_pop")) %>%
   select(-`Virus-adjusted`, -model_location, -model) %>%
   dplyr::mutate(
-    parameter = fct_relevel(factor(parameter, levels = unique(all_pop_est$parameter)), "lrho_pop", after = 7),
+    parameter = fct_relevel(factor(parameter, levels = unique(all_pop_est$parameter)), "lrho_pop", 
+                            after = 7),
     parameter = fct_relevel(parameter, "beta_lp_log_ic80_ctr", after = 5),
     value =  if_else(parameter == "dS_pop", value * 10000, value),
     estimate_rse = if_else(!is.na(rse_sa) & `Model Description` != "(Reeves et al., RSIF 2021)",
@@ -358,6 +359,8 @@ vl_sims = map_df(1:nrow(final_vl_parms), function(i){
 all_sims = bind_rows(unadj_vl_sims, vl_sims, final_mlx_fits)
 
 ```
+
+## Save fits
 
 ```{r save-fits}
 

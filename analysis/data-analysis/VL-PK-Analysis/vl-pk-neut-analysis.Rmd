@@ -67,6 +67,10 @@ vl_mod_placebo = vl_mod_summary_all %>% filter(rx_code2 == "C")
 vl_mod_vrc01_pred_raw =  get_indiv_preds("PKPD/adj-pkpd-model-no-omega") %>%
   rename(pub_id = ID)
 
+# confirmed that ipred = sim pos
+vl_sims = read_csv(clean_data_here("amp-individual-vrc01-sims.csv"), col_types = cols()) %>%
+  left_join(vl_mod_vrc01_pred_raw, by = c("pub_id", "days_enrollment" = "time"))
+
 vl_mod_vrc01_preds = vl_mod_vrc01_pred_raw %>%
   left_join(select(vl_mod_vrc01, pub_id, fp_day), by = "pub_id") %>%
   filter(time == fp_day) %>%
@@ -96,68 +100,19 @@ vl_mod_vrc01_pred_raw %>%
 
 ```
 
-```{r}
-
-vl_sims_infection_stop = map_df(1:nrow(filter(vl_mod_vrc01, vl_model_flag)), function(i){
-  parm_set = vl_mod_vrc01[i, ]
-  stopifnot(nrow(parm_set) == 1)
-  infection_day = parm_set$model_infection_day
-  fp_day = parm_set$fp_day
-  
-  ptid_days = filter(vl_data, pub_id == parm_set$pub_id &
-                       days_enrollment >= infection_day & days_enrollment <= fp_day) %>%
-    pull(days_enrollment)
-  
-  stopifnot(fp_day %in% ptid_days)
-
-  # no dosing after transmission
-  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
-  dosing_stop = filter(dosing, TIME < infection_day)
-  dosing_none = NULL
-  if(nrow(dosing) == 0) dosing = NULL
-  if(nrow(dosing_stop) == 0) dosing_stop = NULL
-  
-  mtime = c(0, ptid_days)
-
-  theta_pk = select(parm_set, Cl, V1, Q, V2)
-  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
-                    rho = 10^parm_set$lrho_mode, 
-                    h = parm_set$hill_ls)
-  run_mod = function(dose_in){
-      run_pkpd_models(mtime,      
-                  holte_pkpd_model,
-                  theta_pk = theta_pk,
-                  theta_vl = prep_vl_model_parms(mode_parms = parm_set),
-                  theta_pd = theta_pd,
-                  infection_time = infection_day,
-                  infusion_pk_dosing = dose_in) %>% filter(time > 0)
-  }
-
-  map2_df(list(dosing, dosing_stop, dosing_none),
-          c("VRC01", "stop_dose_infection", "no_VRC01"),
-          ~mutate(run_mod(..1), sim_type = ..2)) %>%
-    bind_cols(parm_set) %>%
-    mutate(first_positive_row = time == fp_day) %>%
-    select(pub_id, days = time, everything())
-}) %>%
-  left_join(vl_mod_vrc01_preds, by = "pub_id")
-
-# confirmed that ipred = pos_mod
-
-```
-
-
 Without VRC01, were there any increases in VL that would've been caught earlier?
 No (2 observation times, all below log10 LLoQ of 1.3).
 
 ```{r}
-subset(vl_sims_infection_stop, !first_positive_row) %>% select(sim_type, log10V)
+vl_sims %>%
+  filter(days_enrollment > model_infection_day & days_enrollment <= fp_day & !first_positive_row & !is.na(DV)) %>% 
+  select(pub_id, sim_type, log10V)
 ```
 
 ```{r}
 
-vl_sims_infection_stop %>%
-  dplyr::filter(first_positive_row) %>%
+vl_sims %>%
+  dplyr::filter(first_positive_row & sim_type %in% c("NoTreatment", "VRC01")) %>%
   pivot_wider(id_cols = pub_id, names_from = sim_type, values_from = log10V) %>%
   select(-pub_id) %>%
   ggpairs()
@@ -166,21 +121,13 @@ vl_sims_infection_stop %>%
 
 ```{r}
 
-vl_sims_infection_stop %>%
-  filter(first_positive_row & sim_type != "stop_dose_infection") %>%
-  mutate(sens = gmt80ls < 1) %>%
+vl_sims %>%
+  filter(first_positive_row & sim_type %in% c("NoTreatment", "VRC01")) %>%
   ggplot(aes(x = sim_type, y = log10V)) +
   geom_boxplot() +
   geom_point() +
   geom_path(aes(group = pub_id), alpha = 0.5) +
-  scale_x_discrete(limits = c("VRC01", "no_VRC01")) +
-  # geom_text(data = mutate(subset(vl_sims_infection_stop, pub_id %in% c("704-0592", "704-0893")),
-  #                         sens = gmt80ls < 1),
-  #           x = 1, aes(y =first_pos_mod, label = pub_id)) +
-  facet_wrap(~sens, labeller = 
-               as_labeller(c(`FALSE` = "IC80 > 1",
-                             `TRUE` = "IC80 < 1"))
-  ) +
+  facet_wrap(~ic80_cat) +
   labs(x = "", y = "first pos VL")
 
 ```

@@ -10,7 +10,7 @@ output:
 
 # Overview
 
-This is to generate the final figures from the PKPD model decsribing the population results in
+This is to generate the final figures from the PKPD model describing the population results in
 the AMP study.
 
 - Placebo effect plot (the burst size adjustment model)
@@ -32,11 +32,25 @@ source(here("R", "rxode-funs.R"))
 source(here("models", "rxode-models", "rxode-models.R"))
 source(here("models", "rxode-models", "rxode-pkpd-models.R"))
 
+save_shared_folder = T
+
 theme_set(theme_bw() + theme(legend.position = "top"))
 strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
 
 titer_neut = function(id50, h = 1) 1 - beta_titer_neut(id50, h)
 beta_titer_neut = function(id50, h = 1) 1/(1+id50^h)
+
+final_vl_summary = read_csv(clean_data_here("final_vl_summary.csv"), col_types = cols()) %>%
+  mutate(ic80_cat = if_else(gmt80ls < 1, "IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"))
+
+vrc01_dose =  read_csv(mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"), col_types = cols()) %>%
+  filter(ADM == 1) %>%
+  distinct(pub_id, TIME, AMT, RATE) %>%
+  mutate(AMT = as.numeric(AMT), RATE = as.numeric(RATE)) %>%
+  arrange(pub_id, TIME) %>%
+  group_by(pub_id) %>%
+  mutate(DOSENO = row_number()) %>%
+  ungroup()
 
 ```
 
@@ -121,7 +135,76 @@ conc_range = range(vrc01_pkpd_data$centr_conc, na.rm = T)
 
 ```
 
-# Placebo 
+# Individual re-simulations
+
+Re-simulate VRC01 participant VLs with no VRC01, original dosing, 10x dosing, and 100x dosing.
+
+```{r sim-indiv-vrc01}
+
+vl_sims_vrc01 = map_df(subset(final_vl_summary, rx_code2 != "C" & !is.na(Cl))$pub_id, function(i){
+  parm_set = subset(final_vl_summary, pub_id == i)
+  stopifnot(nrow(parm_set) == 1)
+  
+  fp_day = parm_set$fp_day
+  infection_day = parm_set$model_infection_day
+
+  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
+
+  mtime = c(0:(fp_day + 80))
+
+  theta_pk = select(parm_set, Cl, V1, Q, V2)
+  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
+                    rho = 10^parm_set$lrho_mode, 
+                    h = parm_set$hill_ls)
+  
+  dose_mult = function(dose_data, multiplier = 1) mutate(dose_data, AMT = AMT * multiplier)
+  
+  run_mod = function(dose_in){
+      run_pkpd_models(mtime,      
+                  holte_pkpd_model,
+                  theta_pk = theta_pk,
+                  theta_vl = prep_vl_model_parms(mode_parms = parm_set),
+                  theta_pd = theta_pd,
+                  infection_time = infection_day,
+                  infusion_pk_dosing = dose_in) %>% filter(time > 0)
+  }
+
+  # both functions here are declared in this map
+  map2_df(list(NULL, dosing, dose_mult(dosing, 10), dose_mult(dosing, 100), dose_mult(dosing, 1000)),
+          c("NoTreatment", "VRC01", "VRC01x10", "VRC01x100", "VRC01x1000"),
+          ~mutate(run_mod(..1), sim_type = ..2)) %>%
+    bind_cols(parm_set) %>%
+    mutate(first_positive_row = time == fp_day) %>%
+    select(pub_id, days = time, everything())
+})  
+
+```
+
+```{r indiv-sim-curves}
+
+vl_sims_vrc01 %>%
+  mutate(days_fp = days - fp_day) %>%
+  filter(days_fp > -30  & days >= model_infection_day) %>%
+  ggplot(aes(x = days_fp, y = pmax(1, log10V))) +
+  geom_line(aes(group = pub_id), alpha = 0.25) +
+  facet_grid(cols = vars(ic80_cat), rows = vars(sim_type))
+  
+```
+
+```{r fp-comparison}
+
+vl_sims_vrc01 %>%
+  filter(first_positive_row & sim_type %in% c("NoTreatment", "VRC01")) %>%
+  ggplot(aes(x = sim_type, y = log10V)) +
+  geom_boxplot() +
+  geom_point() +
+  geom_path(aes(group = pub_id), alpha = 0.5) +
+  facet_wrap(~ic80_cat) +
+  labs(x = "", y = "first pos VL")
+
+```
+
+# Placebo Sensitivity effects
 
 the effect on log10 p:
 
@@ -540,7 +623,39 @@ amp_titer_vl_summary %>%
 scale_x_log10() +
   labs(y = "predicted first positive", x = "predicted PT80 at first positive") 
 
+```
 
+# Save data
+
+```{r}
+check_first_pos = vl_sims_vrc01 %>%
+  filter(first_positive_row) %>%
+  group_by(sim_type) %>%
+  summarize(total = n_distinct(pub_id), .groups = "drop")
+stopifnot(all(check_first_pos$total == 96))
+
+sims_out = vl_sims_vrc01 %>%
+  mutate(days_fp = days - fp_day) %>%
+  filter(days_fp > -30 & days >= model_infection_day) %>% 
+  select(pub_id, sim_type, days_fp, log10V, ic80_cat, contains("gmt"), first_positive_row, fp_day, model_infection_day, days_enrollment = days)
+
+write_csv(sims_out, clean_data_here("amp-individual-vrc01-sims.csv"))
+
+```
+
+
+```{r save-shared, eval = save_shared_folder}
+
+write_csv(tribble(
+  ~variable_name, ~description,
+  "sim_type", "NoTreatment = VRC01 off, VRC01 was AMP, VRC01xX has X is multiplier",
+  "days_fp", "days relative to first positive",
+  "ic80_cat", "binary category based on gmt80ls",
+  "first_positive_row", "subset on this to get the observation time of the first positive"),
+  paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!INDIVIDUAL SIMS - ",
+         Sys.Date()))
+
+write_csv(sims_out, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/amp-individual-vrc01-sims.csv")
 
 ```
 

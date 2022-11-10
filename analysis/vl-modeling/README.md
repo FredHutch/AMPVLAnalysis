@@ -40,8 +40,11 @@ The model fitting procedure is as follows:
     - `final_model_popparms.csv`
 - 06\) amp-sim-analysis
   - This generates key manuscripts figures
+  - Inidividual simulations with different VRC01 settings
   - Population-level simulations to illustrate dose-response, direct/indirect effects
   - Simulations of future regimens
+  - Save individual trajectories
+     - `individual-amp-vrc01-sims.csv`
  
  
 ### VL models
