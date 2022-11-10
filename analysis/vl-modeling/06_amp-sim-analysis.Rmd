@@ -19,7 +19,6 @@ the AMP study.
 
 ```{r load-packages, echo = T, message=F,output=F,warning =F}
 knitr::opts_chunk$set(echo = T)
-library(tidyverse)
 library(here)
 library(glue)
 library(kableExtra)
@@ -31,8 +30,11 @@ source(here("R", "mlx-res-processing.R"))
 source(here("R", "rxode-funs.R"))
 source(here("models", "rxode-models", "rxode-models.R"))
 source(here("models", "rxode-models", "rxode-pkpd-models.R"))
+library(tidyverse)
 
-save_shared_folder = T
+
+save_shared_folder = F
+rerun_sims = F
 
 theme_set(theme_bw() + theme(legend.position = "top"))
 strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
@@ -51,6 +53,8 @@ vrc01_dose =  read_csv(mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"), col_t
   group_by(pub_id) %>%
   mutate(DOSENO = row_number()) %>%
   ungroup()
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
 
 ```
 
@@ -139,7 +143,7 @@ conc_range = range(vrc01_pkpd_data$centr_conc, na.rm = T)
 
 Re-simulate VRC01 participant VLs with no VRC01, original dosing, 10x dosing, and 100x dosing.
 
-```{r sim-indiv-vrc01}
+```{r sim-indiv-vrc01, eval = rerun_sims}
 
 vl_sims_vrc01 = map_df(subset(final_vl_summary, rx_code2 != "C" & !is.na(Cl))$pub_id, function(i){
   parm_set = subset(final_vl_summary, pub_id == i)
@@ -176,31 +180,94 @@ vl_sims_vrc01 = map_df(subset(final_vl_summary, rx_code2 != "C" & !is.na(Cl))$pu
     bind_cols(parm_set) %>%
     mutate(first_positive_row = time == fp_day) %>%
     select(pub_id, days = time, everything())
-})  
+})  %>%
+  mutate(days_fp = days - fp_day) %>%
+  filter(days_fp > -30 & days >= model_infection_day) %>%
+  rename(days_enrollment = days)
+
+
+```
+
+```{r load-sims, eval = !rerun_sims}
+
+vl_sims_vrc01 = read_csv(clean_data_here("amp-individual-vrc01-sims.csv"))
 
 ```
 
 ```{r indiv-sim-curves}
 
-vl_sims_vrc01 %>%
-  mutate(days_fp = days - fp_day) %>%
-  filter(days_fp > -30  & days >= model_infection_day) %>%
-  ggplot(aes(x = days_fp, y = pmax(1, log10V))) +
+#labels = c(expression(paste(bold("VRC01 sensitive: IC80") <1)), 
+#                                      expression("VRC01 resistant: IC80">=1))
+
+ic80_label = c(`IC80 < 1 mcg/mL` =  bquote("#008080"),
+               `IC80 >= 1 mcg/mL` =  "coral"
+             )
+
+sim_plot = vl_sims_vrc01 %>%
+  mutate(ic80_cat2 = factor(ic80_cat, 
+                            levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
+                            labels = c("VRC01 sensitive: IC80<1", 
+                                       "VRC01 resistant: IC80\u22651")),
+         sim_type2 = factor(sim_type,
+           levels = c("NoTreatment", "VRC01", "VRC01x10", "VRC01x100", "VRC01x1000"),
+           labels = c("No VRC01", "VRC01 (AMP design)", 
+                      "10x potency", "100x potency", "1000x potency")
+         )
+                            ) %>%
+  ggplot(aes(x = days_fp, y = pmax(1, log10V), colour = ic80_cat)) +
   geom_line(aes(group = pub_id), alpha = 0.25) +
-  facet_grid(cols = vars(ic80_cat), rows = vars(sim_type))
+  scale_color_manual(values = ic80gte1_colors) +
+  scale_x_continuous(breaks = 20 * (-1:3)) +
+  scale_y_continuous(breaks = 2 * 1:4, limits = c(NA, 8)) +
+  lemon::facet_rep_grid(cols = vars(ic80_cat2), rows = vars(sim_type2),
+                        repeat.tick.labels = TRUE) +
+  labs(x = "Time (days relative to first positive)", 
+       y = expression(paste("Simulated viral load log"[10], "(copies/mL)"))) +
+  coord_cartesian(xlim = c(-20, 60)) +
+  theme(legend.position = "none", strip.background = element_blank(), panel.grid = element_blank(),
+        text = element_text(family = "sans"), strip.text.x = element_text(face = "bold", size = 8), 
+        strip.clip = "off"
+         )
+
+
+cairo_pdf("06_amp-sim-analysis_files/figure-html/indiv-sim-curves-1.pdf", family="DejaVu Sans")
+sim_plot + theme(aspect.ratio = 0.9)
+dev.off()
+
+sim_plot
   
 ```
-
+ 
 ```{r fp-comparison}
 
-vl_sims_vrc01 %>%
+fp_bp = vl_sims_vrc01 %>%
   filter(first_positive_row & sim_type %in% c("NoTreatment", "VRC01")) %>%
-  ggplot(aes(x = sim_type, y = log10V)) +
-  geom_boxplot() +
-  geom_point() +
-  geom_path(aes(group = pub_id), alpha = 0.5) +
-  facet_wrap(~ic80_cat) +
-  labs(x = "", y = "first pos VL")
+  mutate(ic80_cat2 = factor(ic80_cat, 
+                            levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
+                            labels = c("VRC01 sensitive: IC80<1", 
+                                       "VRC01 resistant: IC80\u22651")),
+         sim_type2 = factor(sim_type,
+           levels = c("NoTreatment", "VRC01", "VRC01x10", "VRC01x100", "VRC01x1000"),
+           labels = c("No VRC01", "VRC01 (AMP design)", 
+                      "10x potency", "100x potency", "1000x potency")
+         )
+         ) %>%
+  ggplot(aes(x = sim_type2, y = log10V)) +
+  geom_boxplot(width = 0.2,) +
+  geom_point(aes(color = ic80_cat), position = position_jitter(width = 0.1), alpha = 0.4) +
+  geom_path(aes(group = pub_id, color = ic80_cat), alpha = 0.25) +
+  scale_color_manual(values = ic80gte1_colors) +
+  facet_wrap(vars(ic80_cat2)) +
+  labs(x = "", 
+       y = expression(paste("Predicted first positive viral load log"[10], "(copies/mL)"))) +
+  theme(strip.background = element_blank(), panel.grid = element_blank(),
+        strip.text.x = element_text(face = "bold"), legend.position = "none") 
+
+cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-comparison-1.pdf", family="DejaVu Sans")
+fp_bp + theme(aspect.ratio = 3/4)
+dev.off()
+
+fp_bp
 
 ```
 
@@ -627,7 +694,7 @@ scale_x_log10() +
 
 # Save data
 
-```{r}
+```{r, eval = !rerun_sims}
 check_first_pos = vl_sims_vrc01 %>%
   filter(first_positive_row) %>%
   group_by(sim_type) %>%
@@ -635,9 +702,8 @@ check_first_pos = vl_sims_vrc01 %>%
 stopifnot(all(check_first_pos$total == 96))
 
 sims_out = vl_sims_vrc01 %>%
-  mutate(days_fp = days - fp_day) %>%
-  filter(days_fp > -30 & days >= model_infection_day) %>% 
-  select(pub_id, sim_type, days_fp, log10V, ic80_cat, contains("gmt"), first_positive_row, fp_day, model_infection_day, days_enrollment = days)
+  select(pub_id, sim_type, days_fp, log10V, ic80_cat, contains("gmt"), first_positive_row, fp_day, 
+         model_infection_day, days_enrollment)
 
 write_csv(sims_out, clean_data_here("amp-individual-vrc01-sims.csv"))
 
