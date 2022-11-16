@@ -8,7 +8,7 @@ output:
     code_folding: hide
 ---
 
-```{r load-packages, echo = FALSE, message=F,output=F}
+```{r load-packages, echo = FALSE, message=F,output=F, warning=F}
 
 knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
@@ -22,6 +22,10 @@ theme_set(theme_bw() + theme(legend.position = "top"))
 
 sum_nonmissing = function(x) sum(!is.na(x))
 hill_slope = function(ic50, ic80) -log(4)/(log(ic50/ic80))
+
+
+save_out = F
+if(!save_out) print("output data not saved on this compile")
 
 ```
 
@@ -113,12 +117,24 @@ Because there is censoring of the IC50 and IC80. Will look at censoring of IC50 
 
 ```{r}
 
+calc_hill_summary = function(h){
+  
+  mean = round(mean(h), 2)
+  quantile_05 = round(quantile(h, 0.05), 2)
+  quantile_l95 = round(quantile(h, 0.95), 2)
+  min = round(min(h), 2)
+  max = round(max(h), 2)
+  paste(mean, quantile_05, quantile_l95, min, max, collapse = "; ")
+  
+}
+
 demo_dat %>%
   summarize(
-    hill_ls = mean(hill_ls[gmt80ls < 100]),
-    hill_ms = mean(hill_ms[gmt80ms < 100]),
-    hill_mf = mean(hill_mf[gmt80mf < 100])
-  )
+    hill_ls = calc_hill_summary(hill_ls[gmt80ls < 100]),
+    hill_ms = calc_hill_summary(hill_ms[gmt80ms < 100]),
+    hill_mf = calc_hill_summary(hill_mf[gmt80mf < 100])
+  ) %>%
+  gather(key = "sens", value = "mean; q05; q95; min; max")
 
 demo_dat %>%
   ggplot(aes(x = gmt50ls, y = pmax(hill_ls, -3))) +
@@ -129,7 +145,9 @@ demo_dat %>%
 
 ```
 
-```{r}
+After using the mean value
+
+```{r hill-fig}
 
 demo_dat_prep = demo_dat %>%
   mutate(
@@ -138,14 +156,17 @@ demo_dat_prep = demo_dat %>%
     hill_mf = if_else(gmt80mf < 100, hill_mf, mean(hill_mf[gmt80mf < 100])),
   )
 
+mean_value = mean(demo_dat$hill_ls[demo_dat$gmt80ls < 100])
+
 demo_dat_prep %>%
-  ggplot(aes(x = gmt50ls, y = pmax(hill_ls, -3))) +
+  filter(gmt50ls < 100) %>%
+  ggplot(aes(x = gmt50ls, y = hill_ls)) +
   geom_beeswarm(groupOnX=F) +
   geom_smooth(data = subset(demo_dat, gmt80ls < 100),
               method = "lm", formula = "y ~ x") +
+  annotate("point", x = 100, y = mean_value, shape = 21, size = 3) +
   scale_x_log10() +
-  ggtitle("after using mean value")
-
+  labs(x = "IC50", y = "Estimated Hill slope")
 ```
 
 # Finalize data
@@ -206,9 +227,13 @@ stopifnot(all(!is.na(final_data_adj)))
 
 ```
 
-```{r save-adj}
+```{r}
 
 glimpse(final_data_adj)
+
+```
+
+```{r save-adj, eval = save_out}
 
 write_csv(final_data_adj, mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"))
 

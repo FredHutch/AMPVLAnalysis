@@ -50,6 +50,8 @@ rx_lab = tibble(
 
 measurement_summary = read_csv(clean_data_here("ptid-measurement-counts.csv"), col_types = cols())
 vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
+full_vl_data = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
+
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
 
 rx_map = rx_dat %>% select(pub_id, rx_code2) %>%
@@ -142,9 +144,11 @@ table1(as.formula(paste(var_formula, "| rx_lab*protocol")),
 
 ```
 
-## Measurements by visit
+# Measurements by visit
 
-Visit schedule (Appendix G from the protocol): 
+Visit schedule (Appendix G from the protocol).
+
+The strategy is to break this up into two segments. Segment one is all pre-dx measurements. Segment two is post-dx. Listed by scheduled visit time and actual range. Want to look at on/off art together
 
 ```{r scheduled-visit}
 
@@ -168,27 +172,64 @@ dx_visit_schedule %>%
 
 ```{r pre-dx-fp}
 
-fp_pre_dx = vl_data %>%
-  dplyr::filter(days_dx < 0 & days_fp >= 0 & has_neut_data) %>%
+fp_pre_dx = full_vl_data %>%
+  dplyr::filter(days_dx < 0 & days_fp >= 0 &  infection_pre85wks & has_neut_data) %>%
   mutate(visitno_tmp = "Pre-Diagnosis")
 
 fp_pre_dx_summary = fp_pre_dx %>%
-  group_by(visitno_tmp) %>%
+  group_by(visitno_tmp, on_art) %>%
   summarize(
     N = n_distinct(pub_id),
     n = n(),
-    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
+    avg_daydx_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx)),
+    avg_dayfp_range = stat_paste(as.character(round(mean(days_fp), 1)), min(days_fp), max(days_fp)),
+    .groups = "drop"
   ) 
 
 fp_pre_dx_summary
 
 ```
 
-There are some visitno labeled for dx-day, but should probably actually be labeled with the 30 conventions.
+Using the visits as coded. Need to resolve two issues, the dx day coding and the "Others". When recoding the others, maybe do categories like
+"Off-schedule: WX-WY"
 
 ```{r dx-data}
 
-dx_dat = vl_data %>%
+dx_post_data = full_vl_data %>%
+  filter(days_dx >= 0  &  infection_pre85wks & has_neut_data) %>%
+  mutate(
+    visitno_cat = case_when(
+      visitno == dxvisit ~ "Dx visit",
+      floor(visitno) == floor(dxvisit) &
+      visitno != dxvisit ~ "First follow-up",
+      !visitno %in% 31:35 ~ "Other",
+      TRUE ~ as.character(visitno)
+      )
+  )
+
+dx_post_summary = dx_post_data %>%
+  group_by(visitno_cat, on_art) %>%
+  summarize(
+    N = n_distinct(pub_id),
+    n = n(),
+    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx)),
+    .groups = "drop"
+  ) 
+
+dx_post_summary %>%
+  arrange(on_art, visitno_cat)
+
+dx_post_summary %>%
+  filter(on_art == 0) %>%  
+  janitor::adorn_totals()
+
+```
+
+There are some visitno labeled for dx-day, but should probably actually be labeled with the 30 conventions.
+
+```{r}
+
+dx_day_dat = full_vl_data %>%
   dplyr::filter(has_neut_data & floor(visitno) == floor(dxvisit) & days_dx >= 0) %>%
    mutate(
      visitno_tmp_x = round(visitno - floor(dxvisit), 1),
@@ -196,19 +237,21 @@ dx_dat = vl_data %>%
      visitno_tmp = if_else(days_dx == 0, "v.x", "v.y")
      )
 
-dx_visits_afterd22 = subset(dx_dat, days_dx>22) 
+dx_visits_afterd22 = subset(dx_day_dat, days_dx>22) 
+
 tmp = subset(vl_data, pub_id %in% dx_visits_afterd22$pub_id & days_dx > 0)
 check_dx = ggplot(tmp, aes(x = visitno, y = days_dx)) + geom_point() + geom_line()+ facet_wrap(~pub_id)
 
-dx_dat %>%
-  group_by(visitno_tmp_x) %>%
+dx_day_dat %>%
+  group_by(visitno_tmp_x, on_art) %>%
   summarize(
     N = n_distinct(pub_id),
     n = n(),
     avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
-  ) 
+  ) %>%
+  arrange(on_art, visitno_tmp_x)
 
-dx_dat %>%
+dx_day_dat %>%
   group_by(visitno_tmp_check) %>%
   summarize(
     N = n_distinct(pub_id),
@@ -216,13 +259,14 @@ dx_dat %>%
     avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
   ) 
 
-dx_dat_summary = dx_dat %>%
-  group_by(visitno_tmp) %>%
+dx_dat_summary = dx_day_dat %>%
+  group_by(visitno_tmp, on_art) %>%
   summarize(
     N = n_distinct(pub_id),
     n = n(),
-    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
-  ) 
+    avg_daydx_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx)),
+    avg_dayfp_range = stat_paste(as.character(round(mean(days_fp), 1)), min(days_fp), max(days_fp))
+    ) 
 
 dx_dat_summary
 
@@ -231,28 +275,30 @@ dx_dat_summary
 ```{r post-dx-data}
 
 post_dx_dat = vl_data %>%
-  dplyr::filter(days_dx >= 0 & visitno >= 31 & visitno < 40 & has_neut_data) %>%
-  mutate(visitno_tmp = as.character(floor(visitno)))
+  dplyr::filter(days_dx >= 0 & floor(visitno) != floor(dxvisit) & has_neut_data) %>%
+  mutate(visitno_tmp = if_else(visitno %in% 31:35, as.character(floor(visitno)), "Off-schedule"))
 
 post_dx_dat_summary = post_dx_dat %>%
   group_by(visitno_tmp) %>%
   summarize(
     N = n_distinct(pub_id),
     n = n(),
-    avg_day_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx))
-  ) 
+    avg_daydx_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx)),
+    avg_dayfp_range = stat_paste(as.character(round(mean(days_fp), 1)), min(days_fp), max(days_fp))
+    ) 
 
 ```
 
 ```{r visitno-summary}
 
 fp_pre_dx_summary %>%
-  bind_rows(dx_dat_summary) %>%
+  bind_rows(filter(dx_dat_summary, on_art == 0)) %>%
   bind_rows(post_dx_dat_summary) %>%
   ungroup() %>%
   rename(visitno = visitno_tmp) %>%
   left_join(dx_visit_schedule, by = "visitno") %>%
-  select(visitno, N, n, `Expected Day` = expected_day, `Mean day (range)` = avg_day_range) %>%
+  select(visitno, N, n, `Expected Day` = expected_day, `Mean day post-dx (range)` = avg_daydx_range,
+         `Mean day post-first pos (range)` = avg_dayfp_range) %>%
   adorn_totals() %>%
   kable(caption = "VL Measurements by post-dx visit numbers and corresponding study days. Days post-diagnosis. N = total participants, n = total measurements.", digits = 2) %>%
   kable_styling(full_width = F)
@@ -264,12 +310,9 @@ fp_pre_dx_summary %>%
 cuts = c(-125, 0, 1, 22, 38, 52, 70, 140, 197, 400) 
 
 vl_data_dx_cut = vl_data %>%
-  dplyr::filter(has_neut_data) %>%
+  dplyr::filter(has_neut_data, days_fp >= 0) %>%
   mutate(
-    days_dx_cut = cut(days_dx, breaks = cuts, include.lowest = T, right = F)
-  ) %>%
-  dplyr::filter(days_fp >= 0 | days_dx >= 0 & days_dx <= 196) %>%
-  mutate(
+    days_dx_cut = cut(days_dx, breaks = cuts, include.lowest = T, right = F),
     ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
                       labels = c("IC80 < 1 mcg/mL", bquote("IC80 >= 1 mcg/mL"))),
     pre_art = factor(if_else(on_art == 0, "Pre-ART", "Post-ART"), levels = c("Pre-ART", "Post-ART")),
@@ -300,7 +343,7 @@ label(vl_data_dx_cut$days_dx_cut) = "Post-dx study days range"
 
 ```{r by-art}
 
-table1(~days_dx_cut|rx_lab + pre_art, data = vl_data_dx_cut, render.categorical = counts_only, caption = "Measurement counts by ART-status and VRC01 groups.")
+table1(~days_dx_cut|rx_lab, data = vl_data_dx_cut, render.categorical = counts_only, caption = "Measurement counts by VRC01 groups.")
 
 ```
 
