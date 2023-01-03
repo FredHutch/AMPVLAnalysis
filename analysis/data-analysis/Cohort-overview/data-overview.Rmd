@@ -17,6 +17,7 @@ library(kableExtra)
 library(cowplot)
 library(janitor)
 library(table1)
+library(flextable)
 ```
 
 
@@ -50,6 +51,9 @@ rx_lab = tibble(
 
 measurement_summary = read_csv(clean_data_here("ptid-measurement-counts.csv"), col_types = cols())
 vl_data = read_csv(clean_data_here("adata-vl-stats.csv"), col_types = cols())
+time_summary = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols())
+dose_data = read_csv(clean_data_here("dosing-data.csv"), col_types = cols())
+
 full_vl_data = read_csv(clean_data_here("full-vl-data.csv"), col_types = cols())
 
 rx_dat = read_csv(raw_data_here("rx_dat.csv"), col_types = cols())
@@ -73,8 +77,12 @@ demo_vars = distinct(vl_data, pub_id, study_region_code, any_art, protocol) %>%
 neut_vars = distinct(vl_data, pub_id, nisolates, gmt80ls) %>%
   mutate(ic80gte1 = gmt80ls>=1)
 
-```
+t1_print_save = function(t1, file){
+  save_as_docx(t1flex(t1), path=paste0("tables/", file, ".docx"))
+  t1
+}
 
+```
 
 # Background
 
@@ -130,7 +138,8 @@ var_formula = "~ study_region_cat + any_art + ic80gte1 + nisolates + total_measu
 ```{r table1-grp-overall}
 
 table1(as.formula(paste(var_formula, "| rx_lab")), 
-       data=table1_prep, caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group.")
+       data=table1_prep, caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group.")  %>%
+  t1_print_save("main-table1")
 
 ```
 
@@ -140,7 +149,8 @@ table1(as.formula(paste(var_formula, "| rx_lab")),
 
 table1(as.formula(paste(var_formula, "| rx_lab*protocol")),
         data=table1_prep, 
-        caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group and Protocol.")
+        caption = "Demographic and Virologic Characteristics of AMP Participants with HIV-acquisition by VRC01 Group and Protocol.") %>%
+  t1_print_save("supp-table1-by-protocol")
 
 ```
 
@@ -164,8 +174,9 @@ dx_visit_schedule = tribble(
 )
 
 dx_visit_schedule %>%
+  write_csv("tables/supp-visitno_key.csv") %>%
   kable(caption = "visit no. by diagnosis.") %>%
-  kable_styling(full_width = F)
+  kable_styling(full_width = F) 
 
 ```
 
@@ -265,7 +276,8 @@ dx_dat_summary = dx_day_dat %>%
     N = n_distinct(pub_id),
     n = n(),
     avg_daydx_range = stat_paste(as.character(round(mean(days_dx), 1)), min(days_dx), max(days_dx)),
-    avg_dayfp_range = stat_paste(as.character(round(mean(days_fp), 1)), min(days_fp), max(days_fp))
+    avg_dayfp_range = stat_paste(as.character(round(mean(days_fp), 1)), min(days_fp), max(days_fp)),
+    .groups = "drop"
     ) 
 
 dx_dat_summary
@@ -300,6 +312,7 @@ fp_pre_dx_summary %>%
   select(visitno, N, n, `Expected Day` = expected_day, `Mean day post-dx (range)` = avg_daydx_range,
          `Mean day post-first pos (range)` = avg_dayfp_range) %>%
   adorn_totals() %>%
+  write_csv("tables/supp-visit-summary.csv") %>%
   kable(caption = "VL Measurements by post-dx visit numbers and corresponding study days. Days post-diagnosis. N = total participants, n = total measurements.", digits = 2) %>%
   kable_styling(full_width = F)
 
@@ -324,7 +337,8 @@ vl_data_dx_cut %>%
   summarize(N = n_distinct(pub_id),
             n = n()) %>%
   dplyr::select(`Post-dx days range` = days_dx_cut, everything()) %>%
-  adorn_totals()  %>%
+  adorn_totals() %>%
+  write_csv("tables/other/measurement-days.csv") %>%
   kable(caption = "VL Measurements based on diagnosis date not visit. N = total participants, n = total measurements.", digits = 2) %>%
   kable_styling(full_width = F)
 
@@ -343,7 +357,8 @@ label(vl_data_dx_cut$days_dx_cut) = "Post-dx study days range"
 
 ```{r by-art}
 
-table1(~days_dx_cut|rx_lab, data = vl_data_dx_cut, render.categorical = counts_only, caption = "Measurement counts by VRC01 groups.")
+table1(~days_dx_cut|rx_lab, data = vl_data_dx_cut, render.categorical = counts_only, caption = "Measurement counts by VRC01 groups.") %>%
+  t1_print_save("supp-measurement-counts-by-group")
 
 ```
 
@@ -352,7 +367,8 @@ table1(~days_dx_cut|rx_lab, data = vl_data_dx_cut, render.categorical = counts_o
 ```{r by-grp-ic80}
 
 table1(~days_dx_cut|rx_lab + ic80gte1, data = vl_data_dx_cut, render.categorical = counts_only,
-       caption = "Pre-ART measurement counts by VRC01 groups and IC80 cutoffs.")
+       caption = "Pre-ART measurement counts by VRC01 groups and IC80 cutoffs.") %>%
+  t1_print_save("supp-measurement-counts-by-group-ic80")
 
 ```
 
@@ -367,6 +383,7 @@ post_dx_dat %>%
     avg_day_dx = mean(days_dx),
     day_dx_range = paste_range0(days_dx)
   ) %>%
+  write_csv("tables/other/visitno-all.csv") %>%
   kable(caption = "Full description of post-dx visit numbers", digits = 2) %>%
   kable_styling(full_width = F)
 
@@ -386,14 +403,80 @@ vl_data %>%
   separate(protocol_country, into = c("protocol", "country"), sep = "_") %>%
   janitor::adorn_totals("col") %>%
   janitor::adorn_totals() %>%
+  write_csv("tables/other/region-sample-size.csv") %>%
   kable(caption = "Study region breakdown among VL participants") %>%
   kable_styling(full_width = F)
 
 ```
 
 
+# Infusion timing
 
-<!-----
-**everything below is old, due to copying and pasting of document placeholder**
+```{r quick-tally-test}
 
----->
+# just confirms use of time_summary data, consistent with the dose data
+# Dose data can easily tally how many doses after first positive though
+
+test = time_summary %>%
+  filter(rx_code2 != "C") %>%
+  summarize(
+    N = n(),
+    total_infusions_at_after_dx = sum(final_infusion_day >= dx_day),
+    total_infusions_at_after_fp =  sum(final_infusion_day >= fp_day)
+  ) 
+
+stopifnot(test$total_infusions_at_after_dx == 
+            summarize(filter(dose_data, post_dx), n =  n_distinct(pub_id))$n)
+stopifnot(test$total_infusions_at_after_fp == 
+            summarize(filter(dose_data, post_fp), n =  n_distinct(pub_id))$n)
+
+dose_data %>%
+  filter(post_fp) %>%
+  left_join(rx_map, by = "pub_id") %>%
+  left_join(neut_vars, by = "pub_id") %>%
+  group_by(pub_id, rx_lab, ic80gte1, gmt80ls) %>%
+  summarize(
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n > 1) 
+
+```
+
+
+```{r}
+time_summary %>%
+  group_by(group = rx_code2) %>%
+  summarize(
+    N = n(),
+    last_infusion_at_after_dx = sum(final_infusion_day >= dx_day),
+    last_infusion_at_after_fp =  sum(final_infusion_day >= fp_day),
+    .groups = "drop"
+  ) %>%
+  janitor::adorn_totals() %>%
+  write_csv("tables/other/infusion-all-grps.csv") %>%
+  kable() %>%
+  kable_styling(full_width = F)
+
+```
+
+
+```{r}
+
+time_summary %>%
+  left_join(neut_vars, by = "pub_id") %>%
+  mutate(rx_pool = factor(rx_code2 != "C", levels = c("FALSE", "TRUE"),
+                          labels = c("Placebo", "VRC01 (Pooled)"))) %>%
+  group_by(group = rx_pool, `IC80 >= 1` = ic80gte1) %>%
+  summarize(
+    N = n(),
+    last_infusion_at_after_dx = sum(final_infusion_day >= dx_day),
+    last_infusion_at_after_fp =  sum(final_infusion_day >= fp_day),
+    .groups = "drop"
+  ) %>%
+  janitor::adorn_totals() %>%
+  write_csv("tables/supp-infusion-grps.csv") %>%
+  kable(caption = "Total participant counts by whether last infusion was given after first positive. 1 ptid (10mg/kg, IC80 = 5) had two infusions at/after first positive. Participants in placebo group received saline infusions.") %>%
+  kable_styling(full_width = F)
+
+```

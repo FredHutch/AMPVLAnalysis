@@ -1,3 +1,6 @@
+analysis/**/*files/**
+analysis/**/*.md
+analysis/**/*.html
 data/*
 tmp/*
 .Rproj.user
