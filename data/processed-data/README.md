@@ -8,7 +8,7 @@ Data processing essentially has two steps (more details below):
 
 ## 0. Datasets (listed alphabetically)
 
-These datasets are not stored remotely and will only appear if the data processing pipeline is run. A ' denotes datasets that should not be accessed outside of intended context.
+These datasets are not stored remotely and will only appear if the data processing pipeline is run. A * denotes datasets that should not be accessed outside of intended context.
 
 - **adata-pk.csv**: cleaned nonmem data with neut information merged on (`data-processing/02_data-processing.Rmd`)
 - **adata-time-summary.csv**: summary time variables (e.g., fp_day, final infusion) for each ptid (one row per person) (`data-processing/02_data-processing.Rmd`)
