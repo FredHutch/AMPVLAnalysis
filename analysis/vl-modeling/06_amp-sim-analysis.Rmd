@@ -54,7 +54,20 @@ vrc01_dose =  read_csv(mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"), col_t
   mutate(DOSENO = row_number()) %>%
   ungroup()
 
-ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#1F77B4", `IC80 >= 1 mcg/mL` = "coral")
+ic80_label = c(`IC80 < 1 mcg/mL` =  bquote("#1F77B4"),
+               `IC80 >= 1 mcg/mL` =  "coral"
+             )
+
+sim_arrange = tibble(
+           levels = c("VRC01", "NoTreatment", "VRC01x10", "VRC01x100", "VRC01x1000"),
+           labels = c("VRC01 (AMP design)", "No VRC01", 
+                      "10x potency", "100x potency", "1000x potency")
+         )
+                   
+
+# like the arms are: czl=['gray','lightblue','tab:green']
+# and the 4 groups are czl2=['navy','tab:red','tab:blue','coral']
 
 ```
 
@@ -87,9 +100,15 @@ final_pop_ests_wide = final_pop_ests %>%
 
 theta_vl_placebo = prep_vl_model_parms(mode_parms = final_pop_ests_wide, parm_tag = "_pop")
 
-burst_effect = function(ic80, pop_parms = placebo_pop_wide) {
-  lp = final_pop_ests_wide$lp_pop + final_pop_ests_wide$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
+# takes IC80 and pop parms, returns adjusted burst size
+burst_effect = function(ic80, pop_parms = final_pop_ests_wide) {
+  lp = pop_parms$lp_pop + pop_parms$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
   10^(lp)
+}
+
+# takes adjusted individual burst size, ic80, beta, returns unadjusted burst size
+null_lp = function(lp_adj, ic80, pop_parms = final_pop_ests_wide) {
+  lp_adj - pop_parms$beta_lp_log_ic80_ctr * (log10(ic80) - 0.638)
 }
 
 ```
@@ -139,7 +158,58 @@ conc_range = range(vrc01_pkpd_data$centr_conc, na.rm = T)
 
 ```
 
-# Individual re-simulations
+# Individual trajectory simulations
+
+## Placebo
+
+Re-simulate placebo with and without indirect effect.
+
+```{r sim-indiv-placebo}
+
+vl_sims_placebo = map_df(subset(final_vl_summary, rx_code2 == "C" & !is.na(initT_mode))$pub_id, function(i){
+  parm_set = subset(final_vl_summary, pub_id == i)
+  stopifnot(nrow(parm_set) == 1)
+  
+  fp_day = parm_set$fp_day
+  infection_day = parm_set$model_infection_day
+
+  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
+
+  mtime = c(0:(fp_day + 80))
+
+  theta_pk = select(parm_set, Cl, V1, Q, V2)
+  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
+                    rho = 10^parm_set$lrho_mode, 
+                    h = parm_set$hill_ls)
+  
+  parm_set$lp_adj = parm_set$lp_mode
+  parm_set$lp_unadj = null_lp(parm_set$lp_mode, ic80 = parm_set$gmt80ls)
+  
+  prep_vl_parms_burst = function(parm_set, adj_lp = T){
+    if(!adj_lp) parm_set$lp_mode = parm_set$lp_unadj
+    prep_vl_model_parms(mode_parms = parm_set)
+  }  
+    
+  map_df(c(T, F), 
+         ~(run_pkpd_models(mtime,      
+                  holte_pkpd_model,
+                  theta_pk = theta_pk,
+                  theta_vl = prep_vl_parms_burst(parm_set, adj_lp = ..1),
+                  theta_pd = theta_pd,
+                  infection_time = infection_day) %>%
+             mutate(indirect = ..1))) %>%
+    filter(time > 0) %>%
+    bind_cols(parm_set) %>%
+    mutate(first_positive_row = time == fp_day) %>%
+    select(pub_id, days = time, everything())
+})  %>%
+  mutate(days_fp = days - fp_day) %>%
+  filter(days_fp > -30 & days >= model_infection_day) %>%
+  rename(days_enrollment = days)
+
+```
+
+## VRC01 
 
 Re-simulate VRC01 participant VLs with no VRC01, original dosing, 10x dosing, and 100x dosing.
 
@@ -170,7 +240,8 @@ vl_sims_vrc01 = map_df(subset(final_vl_summary, rx_code2 != "C" & !is.na(Cl))$pu
                   theta_vl = prep_vl_model_parms(mode_parms = parm_set),
                   theta_pd = theta_pd,
                   infection_time = infection_day,
-                  infusion_pk_dosing = dose_in) %>% filter(time > 0)
+                  infusion_pk_dosing = dose_in) %>% 
+      filter(time > 0)
   }
 
   # both functions here are declared in this map
@@ -185,89 +256,21 @@ vl_sims_vrc01 = map_df(subset(final_vl_summary, rx_code2 != "C" & !is.na(Cl))$pu
   filter(days_fp > -30 & days >= model_infection_day) %>%
   rename(days_enrollment = days)
 
-
 ```
 
 ```{r load-sims, eval = !rerun_sims}
 
-vl_sims_vrc01 = read_csv(clean_data_here("amp-individual-vrc01-sims.csv"))
-
-```
-
-```{r indiv-sim-curves}
-
-#labels = c(expression(paste(bold("VRC01 sensitive: IC80") <1)), 
-#                                      expression("VRC01 resistant: IC80">=1))
-
-ic80_label = c(`IC80 < 1 mcg/mL` =  bquote("#008080"),
-               `IC80 >= 1 mcg/mL` =  "coral"
-             )
-
-sim_plot = vl_sims_vrc01 %>%
-  mutate(ic80_cat2 = factor(ic80_cat, 
-                            levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
-                            labels = c("VRC01 sensitive: IC80<1", 
-                                       "VRC01 resistant: IC80\u22651")),
-         sim_type2 = factor(sim_type,
-           levels = c("NoTreatment", "VRC01", "VRC01x10", "VRC01x100", "VRC01x1000"),
-           labels = c("No VRC01", "VRC01 (AMP design)", 
-                      "10x potency", "100x potency", "1000x potency")
-         )
-                            ) %>%
-  ggplot(aes(x = days_fp, y = pmax(1, log10V), colour = ic80_cat)) +
-  geom_line(aes(group = pub_id), alpha = 0.25) +
-  scale_color_manual(values = ic80gte1_colors) +
-  scale_x_continuous(breaks = 20 * (-1:3)) +
-  scale_y_continuous(breaks = 2 * 1:4, limits = c(NA, 8)) +
-  lemon::facet_rep_grid(cols = vars(ic80_cat2), rows = vars(sim_type2),
-                        repeat.tick.labels = TRUE) +
-  labs(x = "Time (days relative to first positive)", 
-       y = expression(paste("Simulated viral load log"[10], "(copies/mL)"))) +
-  coord_cartesian(xlim = c(-20, 60)) +
-  theme(legend.position = "none", strip.background = element_blank(), panel.grid = element_blank(),
-        text = element_text(family = "sans"), strip.text.x = element_text(face = "bold", size = 8), 
-        strip.clip = "off"
-         )
-
-
-cairo_pdf("06_amp-sim-analysis_files/figure-html/indiv-sim-curves-1.pdf", family="DejaVu Sans")
-sim_plot + theme(aspect.ratio = 0.9)
-dev.off()
-
-sim_plot
-  
-```
- 
-```{r fp-comparison}
-
-fp_bp = vl_sims_vrc01 %>%
-  filter(first_positive_row & sim_type %in% c("NoTreatment", "VRC01")) %>%
-  mutate(ic80_cat2 = factor(ic80_cat, 
-                            levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
-                            labels = c("VRC01 sensitive: IC80<1", 
-                                       "VRC01 resistant: IC80\u22651")),
-         sim_type2 = factor(sim_type,
-           levels = c("NoTreatment", "VRC01", "VRC01x10", "VRC01x100", "VRC01x1000"),
-           labels = c("No VRC01", "VRC01 (AMP design)", 
-                      "10x potency", "100x potency", "1000x potency")
-         )
-         ) %>%
-  ggplot(aes(x = sim_type2, y = log10V)) +
-  geom_boxplot(width = 0.2,) +
-  geom_point(aes(color = ic80_cat), position = position_jitter(width = 0.1), alpha = 0.4) +
-  geom_path(aes(group = pub_id, color = ic80_cat), alpha = 0.25) +
-  scale_color_manual(values = ic80gte1_colors) +
-  facet_wrap(vars(ic80_cat2)) +
-  labs(x = "", 
-       y = expression(paste("Predicted first positive viral load log"[10], "(copies/mL)"))) +
-  theme(strip.background = element_blank(), panel.grid = element_blank(),
-        strip.text.x = element_text(face = "bold"), legend.position = "none") 
-
-cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-comparison-1.pdf", family="DejaVu Sans")
-fp_bp + theme(aspect.ratio = 3/4)
-dev.off()
-
-fp_bp
+vl_sims_vrc01 = read_csv(clean_data_here("amp-individual-vrc01-sims.csv"), show_col_types = F) %>%
+  mutate(
+    ic80_cat2 = factor(
+      ic80_cat,
+      levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
+      labels = c("VRC01 sensitive: IC80<1",
+                 "VRC01 resistant: IC80\u22651")
+    ),
+    sim_type2 = factor(sim_type, levels = sim_arrange$levels, labels =
+                         sim_arrange$labels)
+  )
 
 ```
 
@@ -294,13 +297,48 @@ tibble(
 
 ```
 
+```{r placebo-fp-effect}
+
+fp_placebo_data = vl_sims_placebo %>%
+  filter(first_positive_row)
+
+fp_placebo_data_wide = fp_placebo_data %>%
+  select(pub_id, indirect, log10V, gmt80ls, initT_mode) %>%
+  pivot_wider(values_from = log10V, names_from = indirect, names_prefix = "indirect")
+
+fp_bp_placebo = fp_placebo_data %>%
+  mutate(ic80_cat2 = factor(ic80_cat, 
+                            levels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"),
+                            labels = c("VRC01 sensitive: IC80<1", 
+                                       "VRC01 resistant: IC80\u22651"))
+         ) %>%
+  ggplot(aes(x = factor(indirect), y = log10V)) +
+  geom_boxplot(width = 0.2,) +
+  geom_point(aes(color = ic80_cat), position = position_jitter(width = 0.1), alpha = 0.4) +
+  geom_path(aes(group = pub_id, color = ic80_cat), alpha = 0.25) +
+  scale_color_manual(values = ic80gte1_colors) +
+  ggplot2::facet_wrap(vars(ic80_cat2)) +
+  scale_x_discrete(limits = c(F, T), labels = c("Median IC80", "Obs. IC80")) +
+  labs(x = "Indirect effect on burst size", 
+       y = expression(paste("Predicted first positive viral load log"[10], "(copies/mL)"))) +
+  theme(strip.background = element_blank(), panel.grid = element_blank(),
+        strip.text.x = element_text(face = "bold"), legend.position = "none") 
+
+cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-placebo-comparison-1.pdf", family="DejaVu Sans")
+fp_bp_placebo + theme(aspect.ratio = 3/4)
+dev.off()
+
+fp_bp_placebo
+
+```
 
 ```{r placebo-indirect}
+
 ic80_range_burst_size = c(round(placebo_ic80_range, 2), 1, 10)
 
 burst_size_models = map_df(ic80_range_burst_size, function(i){
   theta_vl = theta_vl_placebo
-  theta_vl$p = burst_effect(i, pop_parms = placebo_pop_wide)
+  theta_vl$p = burst_effect(i)
   
   run_pkpd_models(
         0:100,
@@ -329,6 +367,67 @@ placebo_adj_vl_pl
 ```
 
 # VRC01 analysis
+
+## VRC01 effects
+
+```{r indiv-sim-curves}
+
+#labels = c(expression(paste(bold("VRC01 sensitive: IC80") <1)), 
+#                                      expression("VRC01 resistant: IC80">=1))
+
+sim_plot = vl_sims_vrc01 %>%
+  ggplot(aes(x = days_fp, y = pmax(1, log10V), colour = ic80_cat)) +
+  geom_line(aes(group = pub_id), alpha = 0.25) +
+  geom_boxplot(data = filter(vl_sims_vrc01, first_positive_row), 
+               width = 10, outlier.colour = NULL, fill = NA, colour = "black",
+               aes(x = 0)) +
+  scale_color_manual(values = ic80gte1_colors) +
+  scale_x_continuous(breaks = 20 * (-1:3)) +
+  scale_y_continuous(breaks = 2 * 1:4, limits = c(NA, 8)) +
+  lemon::facet_rep_grid(rows = vars(ic80_cat2), cols = vars(sim_type2),
+                        repeat.tick.labels = FALSE) +
+  labs(x = "Time (days relative to first positive)", 
+       y = expression(paste("Simulated viral load log"[10], "(copies/mL)"))) +
+  coord_cartesian(xlim = c(-20, 60)) +
+  theme(legend.position = "none", strip.background = element_blank(), panel.grid = element_blank(),
+        panel.spacing = unit(0, "lines"),
+        text = element_text(family = "sans"), 
+        strip.text.y = element_text(face = "bold", size = 6), 
+        strip.text.x = element_text(face = "bold", size = 8), 
+        strip.clip = "off"
+         )
+
+
+cairo_pdf("06_amp-sim-analysis_files/figure-html/indiv-sim-curves-1.pdf", family="DejaVu Sans")
+sim_plot + theme(aspect.ratio = 0.9)
+dev.off()
+
+sim_plot
+  
+```
+ 
+```{r fp-comparison}
+
+fp_bp = vl_sims_vrc01 %>%
+  filter(first_positive_row) %>%
+  ggplot(aes(x = sim_type2, y = log10V)) +
+  geom_boxplot(width = 0.2,) +
+  geom_point(aes(color = ic80_cat), position = position_jitter(width = 0.1), alpha = 0.4) +
+  geom_path(aes(group = pub_id, color = ic80_cat), alpha = 0.25) +
+  scale_color_manual(values = ic80gte1_colors) +
+  ggplot2::facet_wrap(vars(ic80_cat2)) +
+  labs(x = "", 
+       y = expression(paste("Predicted first positive viral load log"[10], "(copies/mL)"))) +
+  theme(strip.background = element_blank(), panel.grid = element_blank(),
+        strip.text.x = element_text(face = "bold"), legend.position = "none") 
+
+cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-comparison-1.pdf", family="DejaVu Sans")
+fp_bp + theme(aspect.ratio = 3/4)
+dev.off()
+
+fp_bp
+
+```
 
 ## Dose-response
 
@@ -401,7 +500,7 @@ pkpd_dr_pl_alt
 
 ```
 
-## PKPD Effect on Viral Load
+## Population PKPD Effect on Viral Load
 
 ```{r setup}
 
@@ -578,7 +677,7 @@ amp_pkpd_indirect_models = map_df(id80_range, function(pt80){
   map_df(ic80_range, function(ic80){
     
     amp_theta_pd$IC80 = ic80
-    theta_vl_vrc01$p = burst_effect(ic80, pop_parms = theta_vl_vrc01)
+    theta_vl_vrc01$p = burst_effect(ic80)
     
     initial_dose = pt80 * ic80 * theta_pk$V1
   
