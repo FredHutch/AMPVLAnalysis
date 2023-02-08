@@ -17,6 +17,7 @@ library(here)
 library(glue)
 library(kableExtra)
 library(ggbeeswarm)
+library(cowplot)
 source(here("R", "directory-funs.R"))
 theme_set(theme_bw() + theme(legend.position = "top"))
 
@@ -158,15 +159,48 @@ demo_dat_prep = demo_dat %>%
 
 mean_value = mean(demo_dat$hill_ls[demo_dat$gmt80ls < 100])
 
-demo_dat_prep %>%
+scatter_pl_raw = demo_dat_prep %>%
   filter(gmt50ls < 100) %>%
   ggplot(aes(x = gmt50ls, y = hill_ls)) +
-  geom_beeswarm(groupOnX=F) +
+  geom_beeswarm(groupOnX=F, aes(shape = factor(gmt80ls < 100))) +
+  scale_shape_manual(guide = "none", values = c(21, 16)) +
   geom_smooth(data = subset(demo_dat, gmt80ls < 100),
               method = "lm", formula = "y ~ x") +
   annotate("point", x = 100, y = mean_value, shape = 21, size = 3) +
   scale_x_log10() +
   labs(x = "IC50", y = "Estimated Hill slope")
+
+
+scatter_pl_raw
+
+```
+
+```{r hill-supp-manuscript, dev = c("png", "pdf")}
+
+hill_pl_limits = c(0.25, 1.8)
+turn_off_axes = theme(
+  axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank())
+
+scatter_pl = scatter_pl_raw +
+  scale_y_continuous(limits = hill_pl_limits) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+bp_pl = demo_dat_prep %>%
+  filter(gmt50ls < 100) %>%
+  ggplot(aes(x = 1, y = hill_ls)) +
+  geom_boxplot(width = 0.25) +
+  scale_y_continuous(limits = hill_pl_limits) +
+  theme(
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+
+# the white vs. no border maintains the alignment
+plot_grid(scatter_pl, bp_pl + turn_off_axes + theme(panel.border = element_rect(color = "white")), 
+          rel_widths = c(10, 2), nrow = 1, align = "h")
+
+
 ```
 
 # Finalize data
@@ -195,12 +229,8 @@ stopifnot(all(!is.na(final_data)))
 
 ```
 
-```{r save-unadj}
-
+```{r}
 glimpse(final_data)
-
-write_csv(final_data, mlx_data_here("amp-mlx-pkpd-holteT0.csv"))
-
 ```
 
 ## Infection times from indirect adjusted model
@@ -227,14 +257,17 @@ stopifnot(all(!is.na(final_data_adj)))
 
 ```
 
+
+
+
 ```{r}
-
 glimpse(final_data_adj)
-
 ```
+
 
 ```{r save-adj, eval = save_out}
 
+write_csv(final_data, mlx_data_here("amp-mlx-pkpd-holteT0.csv"))
 write_csv(final_data_adj, mlx_data_here("amp-mlx-pkpd-indirect-holteT0.csv"))
 
 ```

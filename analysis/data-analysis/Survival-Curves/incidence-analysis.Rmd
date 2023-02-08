@@ -32,6 +32,12 @@ time_lab_fp = "Weeks post first RNA+"
 colors = c('gray40','steelblue','navy')
 color_protocol = c("magenta", "purple")
 
+
+ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#1F77B4", `IC80 >= 1 mcg/mL` = "coral")
+ic80_label = c(`IC80 < 1 mcg/mL` =  bquote("#1F77B4"),
+               `IC80 >= 1 mcg/mL` =  "coral"
+             )
+
 ytitle_fp = "Cumulative fraction first RNA+"
 ytitle_art = "Cumulative fraction ART initiation"
 opts_chunk$set(dev = c("png", "pdf"))
