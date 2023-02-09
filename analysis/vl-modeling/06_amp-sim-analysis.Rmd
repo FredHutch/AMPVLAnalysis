@@ -32,9 +32,12 @@ source(here("models", "rxode-models", "rxode-models.R"))
 source(here("models", "rxode-models", "rxode-pkpd-models.R"))
 library(tidyverse)
 
-
 save_shared_folder = F
 rerun_sims = F
+
+# added the placebo sims later
+save_placebo = T
+save_shared_folder_placebo = T & save_placebo
 
 theme_set(theme_bw() + theme(legend.position = "top"))
 strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element_blank())
@@ -808,6 +811,22 @@ write_csv(sims_out, clean_data_here("amp-individual-vrc01-sims.csv"))
 
 ```
 
+```{r placebo-save, eval = save_placebo}
+check_first_pos = vl_sims_placebo %>%
+  filter(first_positive_row) %>%
+  group_by(indirect) %>%
+  summarize(total = n_distinct(pub_id), .groups = "drop")
+stopifnot(all(check_first_pos$total == 62))
+
+sims_out_placebo = vl_sims_placebo %>%
+  filter(indirect) %>%
+  select(pub_id, rx_code2, indirect, days_fp, log10V, ic80_cat, contains("gmt"), first_positive_row, fp_day, 
+         model_infection_day, days_enrollment)
+
+write_csv(sims_out_placebo, clean_data_here("amp-individual-placebo-sims.csv"))
+
+```
+
 
 ```{r save-shared, eval = save_shared_folder}
 
@@ -821,6 +840,20 @@ write_csv(tribble(
          Sys.Date()))
 
 write_csv(sims_out, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/amp-individual-vrc01-sims.csv")
+
+```
+
+```{r save-shared-placebo, eval = save_shared_folder_placebo}
+
+write_csv(tribble(
+  ~variable_name, ~description,
+  "days_fp", "days relative to first positive",
+  "ic80_cat", "binary category based on gmt80ls",
+  "first_positive_row", "subset on this to get the observation time of the first positive"),
+  paste0("/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/!PLACEBO INDIVIDUAL SIMS - ",
+         Sys.Date()))
+
+write_csv(sims_out_placebo, "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/amp-individual-placebo-sims.csv")
 
 ```
 

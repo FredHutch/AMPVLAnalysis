@@ -44,8 +44,8 @@ The model fitting procedure is as follows:
   - Population-level simulations to illustrate dose-response, direct/indirect effects
   - Simulations of future regimens
   - Save individual trajectories
-     - `individual-amp-vrc01-sims.csv`
- 
+     - `amp-individual-placebo-sims.csv`
+     - `amp-individual-vrc01-sims.csv`
  
 ### VL models
 
@@ -53,4 +53,6 @@ All models use a form of the Holte Model stored in `/models/structural-model/`
  - Holte_Model.txt -- VL model with infection time parameters
  - 2_Holte_Model.txt --  Holte_Model with log10VL as the outcome
  - PKPD_Holte.txt -- VL Model with PKPD, PK parameters are fixed regressors, infection time is "dosed"
+ 
+TBD: RxODE models for simulations
 

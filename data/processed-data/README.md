@@ -16,6 +16,7 @@ These datasets are not stored remotely and will only appear if the data processi
 - **adata-vl.csv**: 4 ptids with only 1 VL measurement prior to ART removed from adata-vl-stats.csv (`data-processing/02_data-processing.Rmd`)
 - **adjusted_placebo_vl_popparms.csv**: VL model pop parms trained to placebo with indirect effects (`vl-modeling/03_placebo-pkpd-model.Rmd`)
 - **adjusted_vrc01_vl_parms.csv**: indirect effect VL model applied to VRC01 group (for infection times)  (`vl-modeling/03_placebo-pkpd-model.Rmd`)
+- **amp-individual-placebo-sims.csv**: simulated individual trajectories from final Vl model in placebo (`vl-modeling/06_amp-sim-analysis.Rmd`)
 - **amp-individual-vrc01-sims.csv**: simulated individual trajectories from final PKPD Vl model (`vl-modeling/06_amp-sim-analysis.Rmd`)
 - **amp-neut-blinded.csv**: rawish neut data, processed survival data among ptids with >= 1 isolate (`data-processing/01_neut-vl-processing.Rmd`)
 - **dosing-data.csv**: cleaned full infusion time info for vrc01 and placebo (`data-processing/02_data-processing.Rmd`)
