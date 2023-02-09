@@ -3,10 +3,25 @@ title: "Survival Analysis for Various Time-based Outcomes"
 output: 
   html_document:
     keep_md: true
+    code_folding: hide
 ---
 
-```{r load-packages, echo = FALSE, message=F,output=F}
-knitr::opts_chunk$set(echo = F)
+# Overview
+
+Several curves are compared here.
+
+The main incidence curves of interest are:
+  - time between last infusion pre first positive to first positive
+  - time from first positive to ART initiation
+  
+The main comparisons are:
+  - 703 vs 704
+  - resistant vs sensitive
+  - across treatment groups
+  - sensitive+trt groups
+
+```{r load-packages, echo = FALSE, message=F,output=F,warning=F}
+knitr::opts_chunk$set(echo = T)
 library(VISCfunctions)
 library(tidyverse)
 library(here)
@@ -26,14 +41,23 @@ rx_lab = tibble(
   trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
 )
 
-time_lab_inf = "Weeks post final infusion (pre-RNA+)"
+rx_lab_pool = tibble(
+  levels = c("C", "T1", "T2"),
+  trt_cat = c("Placebo", "VRC01 (10mg/kg)", "VRC01 (30mg/kg)")
+)
+
+time_lab_inf = "Weeks post final pre-RNA+ infusion"
 time_lab_fp = "Weeks post first RNA+"
 #colors = c('gray','light green','forest green')
 colors = c('gray40','steelblue','navy')
 color_protocol = c("magenta", "purple")
 
+colors_grp = c("gray", "#2CA02C")
+ic80gte1_colors = c("#1F77B4", "coral")
+full_colors = c('navy',"#D62728", "#1F77B4", 'coral')
 
-ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#1F77B4", `IC80 >= 1 mcg/mL` = "coral")
+ic80gte1_colors_named = c(`IC80 < 1 mcg/mL` = "#1F77B4", `IC80 >= 1 mcg/mL` = "coral")
+
 ic80_label = c(`IC80 < 1 mcg/mL` =  bquote("#1F77B4"),
                `IC80 >= 1 mcg/mL` =  "coral"
              )
@@ -42,35 +66,60 @@ ytitle_fp = "Cumulative fraction first RNA+"
 ytitle_art = "Cumulative fraction ART initiation"
 opts_chunk$set(dev = c("png", "pdf"))
 
+clean_surv_test = function(surv_test){
+  as_tibble(surv_test$p.value, rownames = "grp1") %>% 
+    gather("grp2", "value", -grp1) %>%
+    unite(col = "comparison", grp1, grp2, sep = " vs. ") %>%
+    rename(lrt_pvalue = value)
+
+}
+
 ```
 
 ```{r load-data}
 
 time_summary_data = read_csv(clean_data_here("adata-time-summary.csv"), col_types = cols()) %>%
   mutate(
-    protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 081", "HVTN 704/HPTN 085")
+    protocol_full = if_else(protocol == "HVTN 703", "HVTN 703/HPTN 081", "HVTN 704/HPTN 085"),
+    grp = rx_lab,
+    rx_pool = if_else(rx_code2 == "C", "Placebo", "VRC01 (Pooled)"),
+    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
+                      labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
+     trt_ic80_pool = paste(rx_pool, ic80gte1, sep = ", ")
     )
 
 ```
 
-## ART Incidence Curves
-
-```{r}
+```{r art-data}
 
 art_surv_data = time_summary_data %>%
   dplyr::filter() %>%
   mutate(
     any_art = !is.na(artstartdt),
-    time_to_art = if_else(any_art, art_day - fp_day, final_day - fp_day)/7,
-    grp = rx_lab,
-    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
-                      labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL")),
+    time_to_art = if_else(any_art, art_day - fp_day, final_day - fp_day)/7
     )
 
 stopifnot(all(art_surv_data$time_to_art > 0))
 stopifnot(all(!is.na(art_surv_data$any_art)))
 
 ```
+
+```{r fp-data}
+
+stopifnot(nrow(subset(time_summary_data, is.na(final_infusion_day))) == 0)
+stopifnot(all(!is.na(time_summary_data$fp_day) & time_summary_data$fp_day < Inf))
+stopifnot(all(!is.na(time_summary_data$final_infusion_pre_fp_day) & time_summary_data$final_infusion_pre_fp_day < Inf))
+stopifnot(!any(is.na(time_summary_data$fp_day)))
+
+fp_surv_data = time_summary_data %>%
+  dplyr::filter() %>%
+  mutate(
+    time_to_fp = (fp_day - final_infusion_pre_fp_day)/7
+    )
+
+```
+
+## ART Incidence Curves
 
 ```{r sample-sizes}
 
@@ -96,16 +145,20 @@ art_surv_data %>%
 ```
 
 
-```{r pooled, fig.height=7}
+```{r trt, fig.height=7}
 
-surv_pool = survfit(Surv(time_to_art, any_art) ~ grp, data = art_surv_data)
-names(surv_pool$strata) <- gsub("grp=", "", names(surv_pool$strata)) 
+surv_trt = survfit(Surv(time_to_art, any_art) ~ grp, data = art_surv_data)
+names(surv_trt$strata) <- gsub("grp=", "", names(surv_trt$strata)) 
 # pairwise_survdiff(Surv(time_to_art, any_art) ~ rx_code2, data = art_surv_data) 
 # loc_lr_pvalues = as_tibble(round(ada_surv_loc_test[["p.value"]], 2), rownames = " ") %>%
 #   replace_na(list(`Left Arm` = " "))
 
+surv_trt_test = pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, 
+                 data = art_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
+
 ggsurvplot(
-  surv_pool,
+  surv_trt,
   data = art_surv_data,
   legend.title = "",
   risk.table = T,
@@ -115,15 +168,7 @@ ggsurvplot(
   fun = "event"
 ) 
 
-
-# ci_fit <- 
-#   cmprsk::cuminc(
-#     ftime = art_surv_data$time_to_art, 
-#     fstatus = art_surv_data$any_art, 
-#     group = as.numeric(art_surv_data$grp),
-#     cencode = 0
-#     )
-# ggcompetingrisks(ci_fit, xlab = "Days", multiple_panels = FALSE)
+surv_trt_test
 
 ```
 
@@ -133,7 +178,12 @@ surv_703 = survfit(Surv(time_to_art, any_art) ~ grp,
                    data = subset(art_surv_data, protocol == "HVTN 703"))
 names(surv_703$strata) <- gsub("grp=", "", names(surv_703$strata)) 
 
-pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, data = subset(art_surv_data, protocol == "HVTN 703"), p.adjust.method = "none")
+
+surv_703_test = pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, 
+                                  data = subset(art_surv_data, protocol == "HVTN 703"), 
+                                  p.adjust.method = "none") %>%
+  clean_surv_test() %>%
+  mutate(comparison = paste0("703: ", comparison))
 
 pl_703 = ggsurvplot(
   surv_703,  
@@ -158,7 +208,12 @@ surv_704 = survfit(Surv(time_to_art, any_art) ~ grp,
                    data = subset(art_surv_data, protocol == "HVTN 704"))
 names(surv_704$strata) <- gsub("grp=", "", names(surv_704$strata)) 
 
-pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, data = subset(art_surv_data, protocol == "HVTN 704"), p.adjust.method = "none")
+
+surv_704_test = pairwise_survdiff(Surv(time_to_art, any_art) ~ grp, 
+                                  data = subset(art_surv_data, protocol == "HVTN 704"), 
+                                  p.adjust.method = "none") %>%
+  clean_surv_test() %>%
+  mutate(comparison = paste0("704: ", comparison))
 
 pl_704 = ggsurvplot(
   surv_704,
@@ -176,6 +231,15 @@ pl_704 = ggsurvplot(
 pl_704
 ```
 
+```{r inc-art-trt}
+
+plot_grid(nrow = 2, rel_heights = c(12,2),
+          plot_grid(pl_703$plot + theme(legend.position = "none"), 
+                    pl_704$plot + theme(legend.position = "none")),
+          get_legend(pl_703$plot)
+)
+
+```
 
 ```{r art-protocol-tbl}
 
@@ -183,7 +247,9 @@ surv_protocol = survfit(Surv(time_to_art, any_art) ~ protocol_full,
                    data = art_surv_data)
 names(surv_protocol$strata) <- gsub("protocol_full=", "", names(surv_protocol$strata)) 
 
-pairwise_survdiff(Surv(time_to_art, any_art) ~ protocol_full, data = art_surv_data, p.adjust.method = "none")
+surv_procotol_test = pairwise_survdiff(Surv(time_to_art, any_art) ~ protocol_full, 
+                                       data = art_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
 
 pl_protocol = ggsurvplot(
   surv_protocol,
@@ -201,19 +267,48 @@ pl_protocol
 
 ```
 
+```{r art-trt-pool}
+
+
+surv_trt_pool = survfit(Surv(time_to_art, any_art) ~ rx_pool, 
+                   data =art_surv_data)
+names(surv_trt_pool$strata) <- gsub("rx_pool=", "", names(surv_trt_pool$strata)) 
+
+surv_trt_pool_test =  pairwise_survdiff(Surv(time_to_art, any_art) ~ rx_pool, 
+                  data = art_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
+
+pl_trt_pool = ggsurvplot(
+  surv_trt_pool,  
+  risk.table = T,
+  palette = colors_grp,
+  data = art_surv_data,
+  legend.title = "",
+  ylab = ytitle_art,
+  xlab = time_lab_fp,
+  fun = "event",
+  ylim = c(0, 1)
+)
+
+pl_trt_pool
+
+```
+
 ```{r art-ic80-tbl}
 
 surv_ic80 = survfit(Surv(time_to_art, any_art) ~ ic80gte1, 
                    data = art_surv_data)
 names(surv_ic80$strata) <- str_remove(names(surv_ic80$strata), "ic80gte1=") 
 
-pairwise_survdiff(Surv(time_to_art, any_art) ~ ic80gte1, data = art_surv_data, p.adjust.method = "none")
+surv_ic80_test = pairwise_survdiff(Surv(time_to_art, any_art) ~ ic80gte1, 
+                                   data = art_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
 
 pl_ic80 = ggsurvplot(
   surv_ic80,
   risk.table = T,
   data = art_surv_data,
-  palette = c("#008080", "coral"),
+  palette = ic80gte1_colors,
   legend.title = "",
   ylab = ytitle_art,
   xlab = time_lab_fp,
@@ -223,66 +318,63 @@ pl_ic80 = ggsurvplot(
 
 pl_ic80
 
+```
+
+```{r art-trt-ic80}
+
+surv_full= survfit(Surv(time_to_art, any_art) ~ trt_ic80_pool, 
+                   data = art_surv_data)
+names(surv_full$strata) <- str_remove(names(surv_full$strata), "trt_ic80_pool=") 
+
+surv_full_test =pairwise_survdiff(Surv(time_to_art, any_art) ~ trt_ic80_pool, 
+                                   data = art_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
+
+pl_full = ggsurvplot(
+  surv_full,
+  risk.table = T,
+  data = art_surv_data,
+  palette = full_colors,
+  legend.title = "",
+  ylab = ytitle_art,
+  xlab = time_lab_fp,
+  fun = "event",
+  ylim = c(0, 1)
+) 
+
+pl_full
 
 ```
 
-```{r inc-art-trt}
 
-plot_grid(nrow = 2, rel_heights = c(12,2),
-          plot_grid(pl_703$plot + theme(legend.position = "none"), 
-                    pl_704$plot + theme(legend.position = "none")),
-          get_legend(pl_703$plot)
-)
+```{r art-tests}
 
-```
+art_tests = surv_trt_test %>%
+  bind_rows(surv_703_test) %>%
+  bind_rows(surv_704_test) %>%
+  bind_rows(surv_ic80_test) %>%
+  bind_rows(surv_trt_pool_test) %>%
+  bind_rows(surv_full_test) %>%
+  mutate(test = "ART initiation (log-rank)") %>%
+  select(test, everything()) %>%
+  filter(!is.na(lrt_pvalue))
 
-
-```{r inc-art-protocol, fig.width = 4}
-
-pl_protocol$plot + theme(legend.position = "bottom", legend.text = element_text(size = 9))
-
-```
-
-
-```{r inc-art-ic80, fig.width = 4}
-
-pl_ic80$plot + theme(legend.position = "bottom")
+art_tests %>%
+  kable(digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1, valign = "top")
 
 ```
-
 
 ## Last infusion (pre positive RNA) to first positive
-
-
-```{r setup-fp}
-
-subset(time_summary_data, is.na(final_infusion_day))
-stopifnot(all(!is.na(time_summary_data$fp_day) & time_summary_data$fp_day < Inf))
-stopifnot(all(!is.na(time_summary_data$final_infusion_pre_fp_day) & time_summary_data$final_infusion_pre_fp_day < Inf))
-any(is.na(time_summary_data$fp_day))
-
-fp_surv_data = time_summary_data %>%
-  dplyr::filter() %>%
-  mutate(
-    time_to_fp = (fp_day - final_infusion_pre_fp_day)/7,
-    grp = rx_lab,
-    ic80gte1 = factor(gmt80ls >= 1, levels = c(F, T), 
-                      labels = c("IC80 < 1 mcg/mL", "IC80 >= 1 mcg/mL"))
-    )
-
-
-```
-
-
-
 
 ```{r fp-pooled, fig.height=7}
 
 fp_surv_pool = survfit(Surv(time_to_fp) ~ grp, data = fp_surv_data)
 names(fp_surv_pool$strata) <- gsub("grp=", "", names(fp_surv_pool$strata)) 
-pairwise_survdiff(Surv(time_to_fp) ~ grp, data = fp_surv_data, p.adjust.method = "none")
-# loc_lr_pvalues = as_tibble(round(ada_surv_loc_test[["p.value"]], 2), rownames = " ") %>%
-#   replace_na(list(`Left Arm` = " "))
+fp_surv_trt_test = pairwise_survdiff(Surv(time_to_fp) ~ grp, 
+                                     data = fp_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
 
 ggsurvplot(
   fp_surv_pool,
@@ -295,16 +387,6 @@ ggsurvplot(
   fun = "event"
 ) 
 
-
-# ci_fit <- 
-#   cmprsk::cuminc(
-#     ftime = art_surv_data$time_to_art, 
-#     fstatus = art_surv_data$any_art, 
-#     group = as.numeric(art_surv_data$grp),
-#     cencode = 0
-#     )
-# ggcompetingrisks(ci_fit, xlab = "Days", multiple_panels = FALSE)
-
 ```
 
 ```{r fp-amp703, fig.height=7}
@@ -313,7 +395,11 @@ fp_surv_703 = survfit(Surv(time_to_fp) ~ grp,
                    data = subset(fp_surv_data, protocol == "HVTN 703"))
 names(fp_surv_703$strata) <- gsub("grp=", "", names(fp_surv_703$strata)) 
 
-pairwise_survdiff(Surv(time_to_fp) ~ grp, data = subset(fp_surv_data, protocol == "HVTN 703"), p.adjust.method = "none")
+fp_surv_703_test = pairwise_survdiff(Surv(time_to_fp) ~ grp, 
+                                     data = subset(fp_surv_data, protocol == "HVTN 703"), 
+                                     p.adjust.method = "none") %>%
+  clean_surv_test() %>%
+  mutate(comparison = paste0("703: ", comparison))
 
 fp_pl_703 = ggsurvplot(
   fp_surv_703,  
@@ -341,7 +427,11 @@ fp_surv_704 = survfit(Surv(time_to_fp) ~ grp,
                    data = subset(fp_surv_data, protocol == "HVTN 704"))
 names(fp_surv_704$strata) <- gsub("grp=", "", names(fp_surv_704$strata)) 
 
-pairwise_survdiff(Surv(time_to_fp) ~ grp, data = subset(fp_surv_data, protocol == "HVTN 704"), p.adjust.method = "none")
+fp_surv_704_test = pairwise_survdiff(Surv(time_to_fp) ~ grp, 
+                                     data = subset(fp_surv_data, protocol == "HVTN 704"),
+                                     p.adjust.method = "none") %>%
+  clean_surv_test() %>%
+  mutate(comparison = paste0("704: ", comparison))
 
 fp_pl_704 = ggsurvplot(
   fp_surv_704,
@@ -361,6 +451,15 @@ fp_pl_704
 
 ```
 
+```{r inc-fp-trt}
+
+plot_grid(nrow = 2, rel_heights = c(12,2),
+          plot_grid(fp_pl_703$plot + theme(legend.position = "none"), 
+                    fp_pl_704$plot + theme(legend.position = "none")),
+          get_legend(fp_pl_704$plot)
+)
+
+```
 
 ```{r fp-protocol}
 
@@ -386,18 +485,45 @@ fp_pl_protocol
 
 ```
 
+```{r fp-trt-pool}
+
+fp_surv_trt_pool = survfit(Surv(time_to_fp) ~ rx_pool, data = fp_surv_data)
+names(fp_surv_trt_pool$strata) <- gsub("rx_pool=", "", names(fp_surv_trt_pool$strata)) 
+
+fp_surv_trt_pool_test = pairwise_survdiff(Surv(time_to_fp) ~ rx_pool, 
+                                          data = fp_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
+
+fp_pl_trt_pool = ggsurvplot(
+  fp_surv_trt_pool,  
+  risk.table = T,
+  palette = colors_grp,
+  data = fp_surv_data,
+  legend.title = "",
+  ylab = ytitle_art,
+  xlab = time_lab_inf,
+  fun = "event",
+  ylim = c(0, 1)
+)
+
+fp_pl_trt_pool
+
+```
+
 ```{r fp-ic80}
 
 fp_surv_ic80 = survfit(Surv(time_to_fp) ~ ic80gte1, data = fp_surv_data)
 names(fp_surv_ic80$strata) <- str_remove(names(fp_surv_ic80$strata), "ic80gte1=") 
 
-pairwise_survdiff(Surv(time_to_fp) ~ ic80gte1, data = fp_surv_data, p.adjust.method = "none")
+fp_surv_ic80_test = pairwise_survdiff(Surv(time_to_fp) ~ ic80gte1, 
+                                          data = fp_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
 
 fp_pl_ic80 = ggsurvplot(
   fp_surv_ic80,
   risk.table = T,
   data = fp_surv_data,
-  palette = c("#008080", "coral"),
+  palette = ic80gte1_colors,
   legend.title = "",
   ylab = ytitle_fp,
   xlab = time_lab_inf,
@@ -407,32 +533,97 @@ fp_pl_ic80 = ggsurvplot(
 
 fp_pl_ic80
 
-
-```
-
-```{r inc-fp-trt}
-
-plot_grid(nrow = 2, rel_heights = c(12,2),
-          plot_grid(fp_pl_703$plot + theme(legend.position = "none"), 
-                    fp_pl_704$plot + theme(legend.position = "none")),
-          get_legend(fp_pl_704$plot)
-)
-
 ```
 
 
-```{r inc-fp-protocol, fig.width = 4}
+```{r fp-trt-ic80}
 
-fp_pl_protocol$plot + theme(legend.position = "bottom", legend.text = element_text(size = 11))
+fp_surv_full = survfit(Surv(time_to_fp) ~ trt_ic80_pool, data = fp_surv_data)
+names(fp_surv_full$strata) <- str_remove(names(fp_surv_full$strata), "trt_ic80_pool=") 
+
+fp_surv_full_test = pairwise_survdiff(Surv(time_to_fp) ~ trt_ic80_pool, 
+                                      data = fp_surv_data, p.adjust.method = "none") %>%
+  clean_surv_test()
+
+fp_pl_full = ggsurvplot(
+  fp_surv_full,
+  risk.table = T,
+  data = fp_surv_data,
+  palette = full_colors,
+  legend.title = "",
+  ylab = ytitle_fp,
+  xlab = time_lab_inf,
+  fun = "event",
+  ylim = c(0, 1)
+) 
+
+fp_pl_full
 
 ```
 
 
-```{r inc-fp-ic80, fig.width = 4}
+```{r fp-tests}
 
-fp_pl_ic80$plot + theme(legend.position = "bottom")
+fp_tests = fp_surv_trt_test %>%
+  bind_rows(fp_surv_703_test) %>%
+  bind_rows(fp_surv_704_test) %>%
+  bind_rows(fp_surv_ic80_test) %>%
+  bind_rows(fp_surv_trt_pool_test) %>%
+  bind_rows(fp_surv_full_test) %>%
+  mutate(test = "infusion-FP (log-rank)") %>%
+  select(test, everything()) %>%
+  filter(!is.na(lrt_pvalue))
+
+fp_tests %>%
+  kable(digits = 3) %>%
+  kable_styling(full_width = F) %>%
+  collapse_rows(1, valign = "top")
+
+```
+
+# Manuscript Supp Figure
+
+```{r lrt-tests}
+
+art_tests %>%
+  bind_rows(fp_tests) %>%
+  write_csv("incidence-analysis_files/figure-html/lrt_tests.csv")
 
 ```
 
 
+```{r supp-time-to-event, fig.height=7, fig.width=10, dev = c("pdf", "png")}
 
+make_panel = function(survA, survB, 
+                      leg_size = 9, 
+                      text_size = 9,
+                      title_size = 9){
+  legend = get_legend(survA$plot + 
+                        theme(
+                          legend.background = element_blank(),
+                          legend.text = element_text(size = leg_size))
+                      )
+  
+  pl_theme = theme(legend.position = "none", 
+                   axis.text.y = element_text(size = text_size),
+                   axis.text.x = element_text(size = text_size),
+                   axis.title.y = element_text(size = title_size),
+                   axis.title.x = element_text(size = title_size)
+                   )
+  
+  plot_grid(
+    plot_grid(survA$plot + pl_theme, survB$plot + pl_theme, nrow = 1),
+    legend, 
+    nrow = 2, rel_heights = c(12, 2)
+  )
+}
+
+plot_grid(make_panel(fp_pl_protocol, pl_protocol), 
+          make_panel(fp_pl_trt_pool, pl_trt_pool), 
+          make_panel(fp_pl_ic80, pl_ic80), 
+          make_panel(fp_pl_full+guides(color=guide_legend(nrow=2,byrow=TRUE)), 
+                                       pl_full, leg_size = 8),
+          nrow = 2, ncol = 2,
+          labels = LETTERS[1:4])
+
+```
