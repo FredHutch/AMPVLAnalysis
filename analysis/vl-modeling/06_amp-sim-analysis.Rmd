@@ -15,6 +15,7 @@ the AMP study.
 
 - Placebo effect plot (the burst size adjustment model)
 - PKPD plots showing direct and indirect effects
+- Main figure showing re-simulations with different VRC01 potency
 
 
 ```{r load-packages, echo = T, message=F,output=F,warning =F}
@@ -36,7 +37,7 @@ save_shared_folder = F
 rerun_sims = F
 
 # added the placebo sims later
-save_placebo = T
+save_placebo = F
 save_shared_folder_placebo = T & save_placebo
 
 theme_set(theme_bw() + theme(legend.position = "top"))
@@ -327,9 +328,9 @@ fp_bp_placebo = fp_placebo_data %>%
   theme(strip.background = element_blank(), panel.grid = element_blank(),
         strip.text.x = element_text(face = "bold"), legend.position = "none") 
 
-cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-placebo-comparison-1.pdf", family="DejaVu Sans")
-fp_bp_placebo + theme(aspect.ratio = 3/4)
-dev.off()
+# cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-placebo-comparison-1.pdf", family="DejaVu Sans")
+# fp_bp_placebo + theme(aspect.ratio = 3/4)
+# dev.off()
 
 fp_bp_placebo
 
@@ -371,12 +372,9 @@ placebo_adj_vl_pl
 
 # VRC01 analysis
 
-## VRC01 effects
+## Varying VRC01 effects
 
 ```{r indiv-sim-curves}
-
-#labels = c(expression(paste(bold("VRC01 sensitive: IC80") <1)), 
-#                                      expression("VRC01 resistant: IC80">=1))
 
 sim_plot = vl_sims_vrc01 %>%
   ggplot(aes(x = days_fp, y = pmax(1, log10V), colour = ic80_cat)) +
@@ -424,11 +422,71 @@ fp_bp = vl_sims_vrc01 %>%
   theme(strip.background = element_blank(), panel.grid = element_blank(),
         strip.text.x = element_text(face = "bold"), legend.position = "none") 
 
-cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-comparison-1.pdf", family="DejaVu Sans")
-fp_bp + theme(aspect.ratio = 3/4)
-dev.off()
+# cairo_pdf("06_amp-sim-analysis_files/figure-html/fp-comparison-1.pdf", family="DejaVu Sans")
+# fp_bp + theme(aspect.ratio = 3/4)
+# dev.off()
 
 fp_bp
+
+```
+
+```{r fp-test-by-design}
+paper_comparisons = c("VRC01 (AMP design) vs. No VRC01",
+                "VRC01 (AMP design) vs. 10x potency",
+                "No VRC01 vs. 10x potency",
+                "10x potency vs. 100x potency",
+                "100x potency vs. 1000x potency")
+
+sim_fp_tests = vl_sims_vrc01 %>%
+  filter(first_positive_row) %>%
+  group_by(ic80_cat) %>%
+  summarize(VISCfunctions::pairwise_test_cont(
+    x = log10V,
+    group = sim_type2,
+    paired = T,
+    id = pub_id,
+    digits = 2
+  ),
+      .groups = "keep"
+) %>%
+  mutate(
+    significant = MagnitudeTest < 0.05
+  ) %>%
+  select(-Mean_SD, -PerfectSeparation) %>%
+  rename(signed_rank_pvalue = MagnitudeTest, N = SampleSizes) %>%
+  filter(Comparison %in% paper_comparisons)
+
+
+sim_fp_tests %>%
+  write_csv("06_amp-sim-analysis_files/figure-html/sim-fp-comparisons.csv") %>%
+  kable(caption = "Tests of first positives across potency") %>%
+  kable_styling(full_width = F)
+
+```
+
+```{r fp-tests-sensitivity}
+
+sim_fp_sens_tests = vl_sims_vrc01 %>%
+  filter(first_positive_row) %>%
+  group_by(sim_type2) %>%
+  summarize(VISCfunctions::pairwise_test_cont(
+    x = log10V,
+    group = ic80_cat,
+    paired = F,
+    digits = 2
+  ),
+      .groups = "keep"
+) %>%
+  mutate(
+    significant = MagnitudeTest < 0.05
+  ) %>%
+  select(-Mean_SD, -PerfectSeparation) %>%
+  rename(wilcox_pvalue = MagnitudeTest, N = SampleSizes)
+
+
+sim_fp_sens_tests %>%
+  kable(caption = "Tests of first positives within potency between sensitivity") %>%
+  kable_styling(full_width = F)
 
 ```
 
