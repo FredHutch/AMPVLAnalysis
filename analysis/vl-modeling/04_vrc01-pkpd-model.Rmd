@@ -193,7 +193,30 @@ setPopulationParameterInformation(lrho_pop = list(initialValue = 2.7982272104, m
 
 ```
 
-```{r profile-adj}
+
+```{r adj-pkpd-modeling-rho-1, eval = F}
+
+setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
+
+setCovariateModel(lp = c(log_ic80_ctr = TRUE))
+setPopulationParameterInformation(
+  beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
+                              method = "FIXED")
+)
+
+setPopulationParameterInformation(lrho_pop = list(initialValue = 0, method = "FIXED"))
+setIndividualParameterVariability(lrho = F)
+getPopulationParameterInformation()
+
+set_project_settings(initial_estimates = FALSE)
+runScenario()
+get_pop_parms()
+
+save_project(pkpd_model_tag("adj-pkpd-model-rhoEQ1"))
+
+```
+
+```{r profile-adj, eval = F}
 
 
 lrho_range = c(0, 1, log10(50), seq(2, 3, by = 0.2), 3.5, 3.8, 4, 4.5, 4.8, 5, 5.5)
@@ -316,7 +339,7 @@ pkpd_models = tribble(
   "pkpd only (no rho omega)", "PKPD/pkpd-model-no-omega",
   "indirect + pkpd", "PKPD/adj-pkpd-model",
   "indirect + pkpd (no rho omega)", "PKPD/adj-pkpd-model-no-omega",
-)
+  "indirect + pkpd (rho = 1)", "PKPD/adj-pkpd-model-rhoEQ1")
 
 pkpd_pop_ests = stack_model_ests(pkpd_models$model_location,  
                                  pkpd_models$model_label) 
@@ -410,7 +433,8 @@ all_indiv_parms %>%
   ggplot(aes(x = model, y = value)) +
   geom_boxplot() +
   facet_wrap(~parameter, scales ="free_y") +
-  ggtitle("all viruses")
+  ggtitle("all viruses") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 all_indiv_parms %>%
   filter(gmt80ls < 1) %>%
@@ -419,7 +443,8 @@ all_indiv_parms %>%
   ggplot(aes(x = model, y = value)) +
   geom_boxplot() +
   facet_wrap(~parameter, scales ="free_y") +
-  ggtitle("sensitive viruses (ic80 < 1)")
+  ggtitle("sensitive viruses (ic80 < 1)")  +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 ```
 

@@ -20,6 +20,7 @@ This curates the final results from the model building:
   - parameter comparisons
   - trajectories
   - vl summary comparisons
+- Make simulations for model rho = 1
 
 Using the final models, simulate the VL. save the key parameters, R0, calculate key model sim results (AUC, set point, upslope). Merge on the observed vl summary.
 
@@ -72,7 +73,7 @@ rx_lab_pool = tibble(
 
 ic80gte1_colors = c(`IC80 < 1 mcg/mL` = "#008080", `IC80 >= 1 mcg/mL` = "coral")
 
-save_shared_folder = T
+save_shared_folder = F
 
 ```
 
@@ -215,6 +216,19 @@ final_vl_parms = bind_rows(final_placebo_parms, final_vrc01_parms) %>%
     V0_mode = 0.01
   )
 
+vrc01_parms_rho1 = get_indiv_parms("PKPD/adj-pkpd-model-rhoEQ1") %>%
+  rename(pub_id = id) %>%
+  left_join(vrc01_initT, by = "pub_id") %>%
+  left_join(vrc01_pk_parms, by = "pub_id") %>%
+  select(pub_id, contains("_mode"), study_region_cat, Cl, V1, Q, V2)%>%
+  left_join(demo_merge, by = "pub_id") %>%
+  mutate(
+    infection_time = if_else(rx_code2 != "C", floor(fp_day - initT_mode), fp_day - initT_mode), # former matches data setup
+    lrho_mode = if_else(rx_code2 == "C" & is.na(lrho_mode), final_pop_theta$lrho, lrho_mode),
+    V0_mode = 0.01
+  )
+  
+
 stopifnot(nrow(final_vl_parms) == 158)
 stopifnot(all(!is.na(select(final_vl_parms))))
 
@@ -223,6 +237,8 @@ stopifnot(all(!is.na(select(final_vl_parms))))
 # Population Parameters
 
 ```{r pop-parms-setup}
+
+
 all_models = tribble(
   ~model_location, ~model_label, ~paper_model,
   "VL/holte_vl_corr_placebo", "Placebo_Fixed RV217_(Reeves et al., RSIF 2021)", T,
@@ -241,6 +257,7 @@ all_models = tribble(
   "VL-adjusted-placebo/cns-pi-vrc01", "VRC01_PKPD_Indirect only (IC80-adjusted viral burst)", F,
   "PKPD/pkpd-model", "VRC01_PKPD_PKPD VRC01-adjusted only (w/ potency reduction variance)", F,
   "PKPD/pkpd-model-no-omega", "VRC01_PKPD_PKPD VRC01-adjusted only", F,
+  "PKPD/adj-pkpd-model-rhoEQ1", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted (w/o potency reduction (rho = 1))", F,
   "PKPD/adj-pkpd-model", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted (w/ potency reduction variance)", F,
   "PKPD/adj-pkpd-model-no-omega", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted", T
   )
@@ -526,6 +543,66 @@ unadj_vl_summary %>%
 
 ```
 
+# No potency reduction
+
+
+```{r}
+
+vl_rho1 = map_df(1:nrow(vrc01_parms_rho1), function(i){
+  parm_set = vrc01_parms_rho1[i, ]
+  stopifnot(nrow(parm_set) == 1)
+  
+  dosing = filter(vrc01_dose, pub_id == parm_set$pub_id)
+  if(nrow(dosing) == 0) dosing = NULL
+  
+  infection_day = parm_set$infection_time
+  mtime = c(0:(infection_day - 1), 
+            seq(infection_day, infection_day + 50, by = 0.1), 
+            infection_day + 51:225)
+  theta_pk = select(parm_set, Cl, V1, Q, V2)
+  theta_pd = tibble(IC80 = parm_set$gmt50ls * 4 ^(1/parm_set$hill_ls), 
+                    rho = 10^parm_set$lrho_mode, 
+                    h = parm_set$hill_ls)
+  
+  run_pkpd_models(mtime,      
+                  holte_pkpd_model,
+                  theta_pk = theta_pk,
+                  theta_vl = prep_vl_model_parms(mode_parms = parm_set),
+                  theta_pd = theta_pd,
+                  infection_time = infection_day,
+                  infusion_pk_dosing = dosing) %>%
+  mutate(
+    infection_day = infection_day,
+    weeks = time/7, 
+    model = "final") %>%
+    bind_cols(parm_set) %>%
+    select(pub_id, everything())
+})
+
+# these all look great
+indiv_plots_rho1 = map(split(sort(vrc01_ids),
+                         ceiling(seq_along(vrc01_ids)/(5 * 2))), 
+                  function(id_set) {
+                    obs_dat = dplyr::filter(all_indiv_obs, pub_id %in% id_set)
+                    vl_rho1 %>%
+                      dplyr::filter(pub_id %in% id_set) %>%
+                      ggplot(aes(x = weeks - fp_day/7, y = log10V)) +
+                      geom_line(aes(colour = model)) +
+                      geom_point(data = obs_dat, aes(shape = as.factor(censored != 0))) +
+                      scale_shape_discrete(guide = "none") +
+                      facet_wrap(~ pub_id, nrow = 5, ncol = 2) +
+                      coord_cartesian(xlim = c(-5, NA)) +
+                      labs(y = "log10 VL") +
+                      theme(legend.position = 'top')
+                  })
+
+ggsave(here("output/pkpd-modeling/vrc01-rho1-fits.pdf"), 
+       width = 8, height = 10,
+       gridExtra::marrangeGrob(indiv_plots_rho1, nrow=1, ncol=1))
+
+
+```
+
 # Save final 
 
 
@@ -540,7 +617,7 @@ stopifnot(nrow(non_model_ptids) == 4)
 
 ```
 
-```{r, class.source = "fold-show"}
+```{r, class.source = "fold-show", eval = save_shared_folder}
 
 write_csv(final_pop_parms, clean_data_here("final_model_popparms.csv"))
 
@@ -565,5 +642,8 @@ write_csv(tibble(),
 
 write_csv(select(final_vl_summary, -log10_auc_3mo, -study, -final_infusion_pre_fp_day, -final_infusion_pre_dx_day),  
           "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/final_model_vl_summary.csv")
+
+write_csv(vl_rho1,  
+          "/Volumes/trials/vaccine/Bryan_Mayer/AMP-Modeling/data/vl_sims_rhoEQ1.csv")
 
 ```
