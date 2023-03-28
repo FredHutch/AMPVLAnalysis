@@ -56,6 +56,8 @@ strip_as_yaxis = theme(strip.placement = "outside", strip.background.y = element
 initializeLixoftConnectors(software = "monolix")
 options(scipen = 999)
 
+update_data = F
+
 ```
 
 ```{r load-funs-data}
@@ -448,6 +450,8 @@ unadj_placebo_pop %>%
 
 ## Individual parameters
 
+### Adjusted model comparisons
+
 ```{r cat}
 
 cat_adj_indiv_parms %>%
@@ -475,6 +479,74 @@ cns_adj_indiv_parms %>%
   ylab("") +
   geom_smooth(formula = "y ~ x", method = "lm") +
   theme(strip.placement = "outside", strip.background.y = element_blank())
+
+```
+
+### All placebo models
+
+For the supplement of the manuscript
+
+```{r placebo-parms, dev = "pdf", fig.width=8, fig.height=7, warning = F}
+
+placebo_model_paper_labels = tribble(
+  ~model_location, ~model_label_paper, ~paper_model,
+  "VL/holte_vl_corr_placebo", "Placebo_Fixed RV217_(Reeves et al., RSIF 2021)", T,
+  "VL/holte_vl_refitomega_placebo", "Placebo_Unadjusted_Refit RV217 Variance", F,
+  "VL/holte_vl_refitcorr_placebo", "Placebo_Unadjusted_Refit RV217 Correlation", T,
+  "VL/holte_vl_refitomegacorr_placebo", "Placebo_Unadjusted_Refit RV217 Variance/Correlation", F,
+  "VL-adjusted-placebo/adj-beta", "Placebo_Adjusted_Cat. IC80-adjusted infectivity", F,
+  "VL-adjusted-placebo/adj-pi", "Placebo_Adjusted_Cat. IC80-adjusted viral burst", F,
+  "VL-adjusted-placebo/adj-kappa", "Placebo_Adjusted_Cat. IC80-adjusted infected cell death", F,
+  "VL-adjusted-placebo/adj-n", "Placebo_Adjusted_Cat. IC80-adjusted Holte power", F,
+  "VL-adjusted-placebo/cns-beta", "Placebo_Adjusted_IC80-adjusted infectivity", F,
+  "VL-adjusted-placebo/cns-pi", "Placebo_Adjusted_IC80-adjusted viral burst", T,
+  "VL-adjusted-placebo/cns-kappa", "Placebo_Adjusted_IC80-adjusted infected cell death", F,
+  "VL-adjusted-placebo/cns-n", "Placebo_Adjusted_IC80-adjusted Holte power", F
+)
+
+placebo_parameters_labels <- tribble(
+  ~parameter, ~parameter_parsed,
+  "dS_mode", "log[10]~delta[S]",
+  "lBt0_mode", "log[10]~beta",
+  "lp_mode", "log[10]~pi",
+  "dI_mode", "kappa",
+  "n_mode", "n"
+)
+
+all_indiv_placebo_parms = stack_indiv_parms(placebo_model_paper_labels$model_location,
+  placebo_model_paper_labels$model_label_paper) %>%
+  rename(pub_id = id) %>%
+  left_join(demo_merge, by = "pub_id")
+
+paper_model_criteria = stack_model_ests(placebo_model_paper_labels$model_location,  
+                                 placebo_model_paper_labels$model_label_paper) %>%
+  mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter)
+  ) %>%
+  filter(parameter == "LogLik" | parameter == "BICc") %>% 
+  select(-se_sa, -rse_sa) %>%
+  spread(parameter, value)
+
+all_indiv_placebo_parms %>%
+  select(pub_id, model, contains("_mode"), -initT_mode, -V0_mode, -aS_mode) %>%
+  gather("parameter", "value", -pub_id, -model) %>%
+  left_join(paper_model_criteria, by = c("model")) %>%
+  mutate(
+     value =  if_else(parameter == "dS_mode", log10(value), value), # warning from other parameters in F
+    parameter_plot = factor(parameter, levels = placebo_parameters_labels$parameter,
+                                 labels = placebo_parameters_labels$parameter_parsed)) %>%
+  separate(model, into = c("Cohort", "virus_adj", "model_desc"), sep = "_", remove = F) %>%
+  ggplot(aes(x = reorder(model_desc, BICc, min), y = value)) +
+  geom_boxplot() +
+  facet_wrap(~parameter_plot, 
+             labeller = label_parsed,
+             scales ="free_x", strip.position = "bottom") +
+  theme(panel.grid = element_blank(), 
+        strip.placement = "outside", 
+        strip.background = element_blank()) +
+  labs(x = "", y= "") +
+  coord_flip()
+
 
 ```
 
@@ -547,7 +619,7 @@ cns_adj_indiv_parms %>%
 
 ## Save pop parms
 
-```{r, class.source = "fold-show"}
+```{r, class.source = "fold-show", eval = update_data}
 
 adj_placebo_pop_ests = get_model_ests("VL-adjusted-placebo/cns-pi")
 
@@ -634,7 +706,7 @@ mutate(adj_vrc01_parms_out, model = "cns-pi") %>%
 
 ```
 
-```{r, class.source = "fold-show"}
+```{r, class.source = "fold-show", eval = update_data}
 
 write_csv(adj_vrc01_parms_out, clean_data_here("adjusted_vrc01_parms.csv"))
 

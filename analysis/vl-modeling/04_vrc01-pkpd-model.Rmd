@@ -188,6 +188,7 @@ getPopulationParameterInformation()
 initial_runs()
 
 save_project(pkpd_model_tag("adj-pkpd-model-no-omega"))
+save_project(pkpd_model_tag("adj-pkpd-model-no-omega-CI"))
 
 setPopulationParameterInformation(lrho_pop = list(initialValue = 2.7982272104, method = "FIXED"))
 
@@ -216,12 +217,27 @@ save_project(pkpd_model_tag("adj-pkpd-model-rhoEQ1"))
 
 ```
 
+
+```{r CIs, eval = F}
+
+library(Rsmlx)
+ci = confintmlx(mlx_model_here(pkpd_model_tag("adj-pkpd-model-no-omega-CI"), mlxtran = T), 
+           method="fim", parameters = c("lrho"), linearization = F, level = 0.95)
+
+# this would take about two hours to run 25, so a work day to run 100
+# confintmlx(mlx_model_here(pkpd_model_tag("adj-pkpd-model-no-omega-CI"), mlxtran = T), 
+#            method="bootstrap", parameters = c("lrho"), linearization = F, nboot = 1, level = 0.95)
+
+```
+
 ```{r profile-adj, eval = F}
 
-
-lrho_range = c(0, 1, log10(50), seq(2, 3, by = 0.2), 3.5, 3.8, 4, 4.5, 4.8, 5, 5.5)
+lrho_range = c(1, log10(50), seq(2, 3, by = 0.1), 3.25, 3.5, 4, 4.5, 5)
 
 adj_models_loglik = map_df(lrho_range, function(r){
+  
+  seed = round(r * 10)
+  set.seed(seed)
   setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
 
   setCovariateModel(lp = c(log_ic80_ctr = TRUE))
@@ -235,54 +251,30 @@ adj_models_loglik = map_df(lrho_range, function(r){
 
   set_project_settings(initial_estimates = FALSE)
   runScenario()
+  # sc = getScenario()
+  # sc$tasks = c(populationParameterEstimation = T, conditionalModeEstimation = F, conditionalDistributionSampling = T,
+  #              standardErrorEstimation = F, logLikelihoodEstimation = T, plots = F)
+  # setScenario(sc)
+  # 
   
   ll = getEstimatedLogLikelihood() %>% flatten_df() %>% rename(loglik = OFV)
   
-  out = bind_cols(tibble(lrho = r, ll))
-  print(out)
-  out
-})
-
-set.seed(134)
-adj_models_loglik_fine = map_df(c(2.7, 2.8, 2.9, 3, 3.1), function(r){
-  setup_pkpd_model(adj_placebo_init, mlx_data = "amp-mlx-pkpd-indirect-holteT0.csv")
-
-  setCovariateModel(lp = c(log_ic80_ctr = TRUE))
-  setIndividualParameterVariability(lrho = F)
-
-  setPopulationParameterInformation(
-    beta_lp_log_ic80_ctr = list(initialValue = adj_placebo_init$beta_lp_log_ic80_ctr, 
-                              method = "FIXED"),
-    lrho_pop = list(initialValue = r, method = "FIXED")
-  )
-
-  set_project_settings(initial_estimates = FALSE)
-  
-  sc = getScenario()
-  sc$tasks = c(populationParameterEstimation = T, conditionalModeEstimation = F, conditionalDistributionSampling = T,
-               standardErrorEstimation = F, logLikelihoodEstimation = T, plots = F)
-  setScenario(sc)
-  
-  ll = map_df(1:5, function(i){
-    runScenario()
-    getEstimatedLogLikelihood() %>% flatten_df() %>% rename(loglik = OFV)
-  }) %>% summarise(across(everything(), min))
-    
-  out = bind_cols(tibble(lrho = r, ll))
+  out = bind_cols(tibble(lrho = r, ll)) %>%
+    mutate(seed = seed)
   print(out)
   out
 })
 
 
-x1 = ggplot(adj_models_loglik, aes(x = 10^lrho, y = loglik)) +
-  geom_point() +
-  geom_line() +
-  scale_x_log10()
-x2 = ggplot(adj_models_loglik, aes(x = 10^lrho, y = loglik)) +
+adj_models_loglik %>%
+  ggplot(aes(x = 10^lrho, y = loglik)) +
   geom_point() +
   geom_line() +
   scale_x_log10() +
-  coord_cartesian(ylim = c(min(all$loglik), 9500))
+  geom_hline(, colour = "red", yintercept = 9261 + 0.5 *qchisq(0.95, 1)) +
+  annotate("point", colour = "red", y = 9261, x = 10^2.8, shape = 13
+           ) +
+  coord_cartesian(ylim = c(9250, 9700))
 
 adj_models_loglik2 = adj_models_loglik %>%
   mutate(min_loglik = min(loglik))
@@ -295,8 +287,6 @@ adj_models_loglik2 %>%
   scale_x_log10()
 
 cowplot::plot_grid(x1, x2, nrow = 1)
-
-
 
 write_csv(adj_models_loglik, "rho_profile.csv")
 
@@ -341,6 +331,7 @@ pkpd_models = tribble(
   "indirect + pkpd (no rho omega)", "PKPD/adj-pkpd-model-no-omega",
   "indirect + pkpd (rho = 1)", "PKPD/adj-pkpd-model-rhoEQ1")
 
+
 pkpd_pop_ests = stack_model_ests(pkpd_models$model_location,  
                                  pkpd_models$model_label) 
 
@@ -366,6 +357,36 @@ all_indiv_parms = stack_indiv_parms(pkpd_models$model_location,
   pkpd_models$model_label) %>%
   rename(pub_id = id) %>%
   left_join(demo_merge, by = "pub_id")
+
+```
+
+```{r model-criteria}
+
+# this comes from 05_, so a bit circular
+# for use in polishing the parameter plots
+
+pkpd_model_paper_labels = tribble(
+  ~model_location, ~model_label_paper, ~paper_model,
+  "VL/holte_vl_refitcorr_vrc01", "VRC01_PKPD_Unadjusted (RV217 refit correlation)", F,
+  "VL-adjusted-placebo/cns-pi-vrc01", "VRC01_PKPD_Indirect only (IC80-adjusted viral burst)", F,
+  "PKPD/pkpd-model", "VRC01_PKPD_PKPD VRC01-adjusted only (w/ potency reduction variance)", F,
+  "PKPD/pkpd-model-no-omega", "VRC01_PKPD_PKPD VRC01-adjusted only", F,
+  "PKPD/adj-pkpd-model-rhoEQ1", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted (w/o potency reduction (rho = 1))", F,
+  "PKPD/adj-pkpd-model", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted (w/ potency reduction variance)", F,
+  "PKPD/adj-pkpd-model-no-omega", "VRC01_PKPD_Indirect + PKPD VRC01-adjusted", T
+) %>%
+  left_join(pkpd_models, by = "model_location")
+  
+paper_model_criteria = pkpd_pop_ests %>%
+  left_join(select(pkpd_model_paper_labels, model_label, model_label_paper),
+            by = c("model" = "model_label")) %>%
+  mutate(
+    parameter = if_else(parameter == "OFV", "LogLik", parameter)
+  ) %>%
+  filter(parameter == "LogLik" | parameter == "BICc") %>% 
+  select(-se_sa, -rse_sa) %>%
+  spread(parameter, value)
+
 
 ```
 
@@ -425,16 +446,71 @@ ggsave(here("output/pkpd-modeling/pkpd-fits.pdf"),
 
 ## Indiv parms
 
-```{r}
+```{r vrc01-parms, dev = "pdf", fig.width=8, fig.height=7, warning = F}
+#   
+#     `Virus-adjusted` = factor(`Virus-adjusted`,
+#                              levels = c("Fixed RV217", "Unadjusted", "Adjusted", "PKPD"))
+
+
+pkpd_parameters_labels <- tribble(
+  ~parameter, ~parameter_parsed,
+  "dS_mode", "log[10]~delta[S]",
+  "lBt0_mode", "log[10]~beta",
+  "lp_mode", "log[10]~pi",
+  "dI_mode", "kappa",
+  "n_mode", "n",
+  "lrho_mode", "log[10]~rho"
+)
 
 all_indiv_parms %>%
   select(pub_id, model, contains("_mode"), -initT_mode, -V0_mode, -aS_mode) %>%
   gather("parameter", "value", -pub_id, -model) %>%
-  ggplot(aes(x = model, y = value)) +
+  left_join(paper_model_criteria, by = c("model")) %>%
+  mutate(
+     value =  if_else(parameter == "dS_mode", log10(value), value), # warning from other parameters in F
+    parameter_plot = factor(parameter, levels = pkpd_parameters_labels$parameter,
+                                 labels = pkpd_parameters_labels$parameter_parsed)) %>%
+  separate(model_label_paper, into = c("Cohort", "virus_adj", "model_desc"), sep = "_", remove = F) %>%
+  ggplot(aes(x = reorder(model_desc, BICc, min), y = value)) +
   geom_boxplot() +
-  facet_wrap(~parameter, scales ="free_y") +
-  ggtitle("all viruses") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  facet_wrap(~parameter_plot, 
+             labeller = label_parsed,
+             scales ="free_x", strip.position = "bottom") +
+  theme(panel.grid = element_blank(), 
+        strip.placement = "outside", 
+        strip.background = element_blank()) +
+  labs(x = "", y= "") +
+  coord_flip()
+
+
+```
+
+```{r vrc01-parms-beta-only, dev = "pdf"}
+
+
+all_indiv_parms %>%
+  select(pub_id, model, contains("_mode"), -initT_mode, -V0_mode, -aS_mode) %>%
+  gather("parameter", "value", -pub_id, -model) %>%
+  left_join(paper_model_criteria, by = c("model")) %>%
+  mutate(parameter_plot = factor(parameter, levels = pkpd_parameters_labels$parameter,
+                                 labels = pkpd_parameters_labels$parameter_parsed)) %>%
+  separate(model_label_paper, into = c("Cohort", "virus_adj", "model_desc"), sep = "_", remove = F) %>%
+  filter(parameter == "lBt0_mode") %>%
+  ggplot(aes(x = reorder(model_desc, BICc, min), y = value)) +
+  geom_boxplot() +
+  facet_wrap(~parameter_plot, 
+             labeller = label_parsed,
+             scales ="free_x", strip.position = "bottom") +
+  theme(panel.grid = element_blank(), 
+        strip.placement = "outside", 
+        strip.background = element_blank()) +
+  labs(x = "", y= "") +
+  coord_flip()
+
+```
+
+
+```{r parms-sens}
 
 all_indiv_parms %>%
   filter(gmt80ls < 1) %>%

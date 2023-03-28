@@ -46,6 +46,7 @@ library(here)
 library(glue)
 library(kableExtra)
 library(GGally)
+library(Rsmlx)
 # library(pkr) use but dont load
 source(here("R", "directory-funs.R"))
 source(here("R", "mlx-res-processing.R"))
@@ -269,7 +270,23 @@ all_pop_est = stack_model_ests(all_models$model_location, all_models$model_label
     parameter = if_else(parameter == "OFV", "LogLik", parameter),
     `Virus-adjusted` = factor(`Virus-adjusted`,
                               levels = c("Fixed RV217", "Unadjusted", "Adjusted", "PKPD"))
-  ) 
+  )
+
+
+```
+
+```{r ci}
+
+ci = confintmlx(mlx_model_here("PKPD/adj-pkpd-model-no-omega-CI", mlxtran = T),  
+           method="fim", parameters = c("lrho"), linearization = F, level = 0.95)
+
+ci$confint %>%
+  as_tibble(rownames = "parameter") %>%
+  mutate(across(where(is.numeric), list(`untrans` = ~ (10^.)))) %>%
+  write_csv(here("output/pkpd-modeling/pkpd-parm-ci.csv")) %>%
+  kable() %>%
+  kable_styling()
+
 ```
 
 ## Model AIC Comparisons
