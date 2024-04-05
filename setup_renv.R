@@ -30,10 +30,17 @@ install("drtmle@1.1.1")
 
 install("Rsmlx@5.0.1")
 
+install("rmarkdown")
+install("patchwork@1.2.0")
+
 remotes::install_version("dparser", version = '1.3.1.4')
 remotes::install_version("PreciseSums", version = '0.4')
 install("RxODE@1.1.5")
 remotes::install_github("FredHutch/VISCfunctions")
+
+install("git2r@0.31.0")
+install.packages(c("htmlTable", "interp", "matrixStats", "polyclip",
+                   "rootSolve", "s2", "TH.data"))
 
 snapshot()
 
